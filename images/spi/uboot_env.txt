@@ -1,0 +1,22 @@
+# Variables d'env U-Boot critiques — Odroid-M1 boot NVMe direct via SPI
+#
+# Référence lisible des 4 variables ajoutées pour faire booter le NVMe
+# directement depuis le bootloader en SPI (voir docs/DEPLOIEMENT_FLOTTE.md et la
+# note de passation). Elles sont stockées dans mtd1 « U-Boot Env » de la puce SPI.
+#
+# Un flash de l'IMAGE COMPLÈTE (golden_spi_16MiB.bin) les embarque déjà (mtd1
+# inclus). Ne les ré-appliquer via `fw_setenv` QUE si l'env a été remis à l'état
+# d'origine (reflash par-partition de mtd1). La source de vérité machine est
+# `spi_core.CRITICAL_ENV_VARS` (utilisée par spi_flash_gui.py / fw_setenv).
+
+boot_targets=nvme mmc1 mmc0 mtd2 mtd1 mtd0 usb0 pxe dhcp
+npu_regulator_enable=regulator dev vdd_npu; regulator value 900000; regulator enable
+nvme_boot=run npu_regulator_enable; pci enum; nvme scan; if nvme device ${devnum}; then setenv devtype nvme; run scan_dev_for_boot_part; fi
+bootcmd_nvme=setenv devnum 0; run nvme_boot
+
+# Application manuelle (root, sur l'unité), équivalente au bouton « Appliquer les
+# 4 vars d'env » :
+#   sudo fw_setenv boot_targets 'nvme mmc1 mmc0 mtd2 mtd1 mtd0 usb0 pxe dhcp'
+#   sudo fw_setenv npu_regulator_enable 'regulator dev vdd_npu; regulator value 900000; regulator enable'
+#   sudo fw_setenv nvme_boot 'run npu_regulator_enable; pci enum; nvme scan; if nvme device ${devnum}; then setenv devtype nvme; run scan_dev_for_boot_part; fi'
+#   sudo fw_setenv bootcmd_nvme 'setenv devnum 0; run nvme_boot'

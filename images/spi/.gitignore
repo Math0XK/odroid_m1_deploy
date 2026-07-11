@@ -1,0 +1,5 @@
+# Backups SPI generes (per-unit / horodates, non versionnes).
+# Le golden_spi_16MiB.bin + son .sha256 RESTENT versionnes (source de verite).
+preflash_backups/
+*.read_tmp
+uboot_env_*.txt

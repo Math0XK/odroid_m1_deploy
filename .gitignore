@@ -1,0 +1,20 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+
+# ---- Caches / outils ----
+.pytest_cache/
+.ruff_cache/
+
+# ---- IDE / editeurs ----
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# Les backups SPI generes (pre-flash, dumps d'env) sont ignores par
+# images/spi/.gitignore ; le golden_spi_16MiB.bin + .sha256 restent versionnes.

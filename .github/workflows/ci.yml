@@ -1,0 +1,31 @@
+name: CI
+
+# CI légère : lint niveau erreur + compilation + tests de la logique pure
+# (clone_core, spi_core — stdlib uniquement, aucun matériel requis).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dépendances (tests + lint)
+        run: pip install ruff pytest
+
+      - name: Lint (erreurs seulement — syntaxe, noms indéfinis)
+        run: ruff check --select E9,F63,F7,F82 tools tests
+
+      - name: Compilation de tous les scripts
+        run: python -m compileall -q tools tests
+
+      - name: Tests
+        run: pytest tests/ -q

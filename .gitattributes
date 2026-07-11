@@ -1,0 +1,9 @@
+# Scripts et unites systemd : fins de ligne Unix obligatoires (executes sur la cible).
+*.sh      text eol=lf
+*.service text eol=lf
+*.py      text eol=lf
+station/xinitrc text eol=lf
+
+# Images SPI (golden 16 MiO, backups) : binaires stricts, aucune conversion de
+# fin de ligne (un CRLF injecte corromprait le bootloader).
+*.bin     binary

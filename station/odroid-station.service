@@ -1,0 +1,23 @@
+[Unit]
+Description=Station de déploiement Odroid-M1 (SPI + clonage NVMe, GUI kiosque)
+# Poste dédié (Odroid-M1 ou PC/banc), image minimale sans gestionnaire de bureau :
+# ce service démarre X lui-même sur tty1 et y lance le tableau de bord plein écran.
+After=multi-user.target
+Conflicts=getty@tty1.service
+Before=getty@tty1.service
+
+[Service]
+Type=simple
+User=root
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+ExecStartPre=/usr/bin/chvt 1
+# @REPO_ROOT@ est substitué par install.sh au chemin absolu du checkout git.
+ExecStart=/usr/bin/startx @REPO_ROOT@/station/xinitrc -- :0 vt1 -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
