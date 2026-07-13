@@ -93,6 +93,30 @@ def test_bootloader_gap_present_faux_si_absent_ou_court():
     assert not cc.bootloader_gap_present(b"\x55\xaa")     # trop court
 
 
+# --- image_size_bytes : dimensionnement d'une image compacte ---
+def test_image_size_bytes_compacte_et_alignee():
+    # racine : 20 Go utilisés ; p2 démarre au secteur 1050624 (~513 MiO)
+    p2_start, used = 1050624, 20 * 10**9
+    size = cc.image_size_bytes(p2_start, used)
+    assert size % 2**20 == 0                       # aligné au MiO
+    assert size >= p2_start * 512 + used           # jamais plus petit que le contenu
+    assert size <= p2_start * 512 + int(used * 1.3)  # compact (pas la taille du disque)
+
+
+def test_image_size_bytes_marge_couvre_le_garde_fou_du_moteur():
+    # Le moteur refuse si used*1.05 > capacité racine : la marge par défaut
+    # (×1.25) doit laisser de la place même avec ~5 % de métadonnées mkfs.
+    used = 25 * 10**9
+    size = cc.image_size_bytes(1050624, used)
+    root_capacity = (size - 1050624 * 512) * 0.95  # -5 % métadonnées ext4
+    assert used * 1.05 < root_capacity
+
+
+def test_image_size_bytes_plancher_pour_racine_quasi_vide():
+    size = cc.image_size_bytes(2048, 10 * 2**20)   # racine 10 MiO seulement
+    assert size >= 2048 * 512 + cc.IMG_ROOT_FLOOR_BYTES
+
+
 # --- extract_root_ids : repérer l'identifiant racine réel du boot.scr ---
 def test_extract_root_ids_uuid_depuis_corps_brut():
     body = b"setenv bootargs root=UUID=eee2b90d-659e-4c1a-97cd-44f881d34d45 ro\n"

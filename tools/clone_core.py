@@ -2,7 +2,7 @@
 """
 clone_core.py — logique PURE (sans interface) du clonage de disque Odroid.
 
-Séparé de `clone_odroid_gui.py` (l'interface tkinter) pour garder chaque fichier
+Séparé de `clone_panel.py` (l'interface tkinter) pour garder chaque fichier
 raisonnable et rendre cette logique testable sans GUI ni matériel
 (`tests/test_clone_core.py`, `tests/test_clone_uboot.py`). Fonctions autonomes :
 lecture blkid/lsblk, nommage de partitions, génération d'identité, réécriture du
@@ -163,7 +163,7 @@ def bootloader_gap_present(sector64_bytes):
     disque-boot) sur une cible qui, en réalité, boote via la puce SPI. Cette
     détection ne doit **jamais** sélectionner le mode de boot : sur ce projet le
     boot passe par la SPI+u-boot pour toute la flotte, et un vestige au secteur
-    64 ne rend pas le disque auto-bootable (cf. clone_odroid_gui, `--boot-mode`
+    64 ne rend pas le disque auto-bootable (cf. clone_panel, `--boot-mode`
     explicite, défaut `spi`). Heuristique volontairement conservatrice : on teste
     le magic RK ; à défaut (secteur nul/aléatoire) on répond « absent ».
     """
@@ -192,6 +192,36 @@ def fs_used(path):
     """Octets utilisés sur le système de fichiers monté à `path` (statvfs)."""
     st = os.statvfs(path)
     return (st.f_blocks - st.f_bfree) * st.f_frsize
+
+
+# Plancher de la partition racine d'une image compacte : en dessous, la marge
+# proportionnelle ne couvre plus les fixes (journal ext4, inodes, divergence
+# statvfs/rsync). Reste largement au-dessus du minimum exigé par le moteur
+# (p2_start + 262144 secteurs ≈ 128 MiO).
+IMG_ROOT_FLOOR_BYTES = 512 * 2**20
+
+
+def image_size_bytes(p2_start_sectors, root_used_bytes, margin=1.25,
+                     floor_bytes=IMG_ROOT_FLOOR_BYTES):
+    """Taille totale (octets) d'une IMAGE DISQUE COMPACTE de la source.
+
+    Tout ce qui précède la racine (zone bootloader + partition BOOT, soit
+    `p2_start_sectors` secteurs de 512 octets) est conservé à l'identique ; la
+    racine, elle, est dimensionnée sur l'espace UTILISÉ de la source (et non la
+    capacité du disque) : un NVMe 128 Go rempli à 20 % donne une image ~30 Go.
+    La marge (défaut ×1.25, plancher `floor_bytes`) absorbe les métadonnées du
+    mkfs frais, le journal et l'écart statvfs/rsync — et reste au-dessus du
+    garde-fou `used × 1.05 > capacité` du moteur. Arrondi au MiO supérieur
+    (alignement propre pour sfdisk/losetup).
+
+    La racine de l'image « remplit » ce fichier taillé au plus juste
+    (build_dst_script retire le size= de la dernière partition) ; au clonage
+    DEPUIS l'image, le même mécanisme la ré-étend à la taille de la vraie cible.
+    """
+    root = max(int(root_used_bytes * margin), floor_bytes)
+    total = p2_start_sectors * 512 + root
+    mib = 2**20
+    return ((total + mib - 1) // mib) * mib
 
 
 def rewrite_uboot_script(data, ordered):

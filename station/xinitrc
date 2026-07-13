@@ -4,7 +4,7 @@
 # Lancé par `startx` depuis le service systemd `odroid-station.service`. Pas de
 # gestionnaire de fenêtres (l'app tourne en plein écran, inutile d'en installer
 # un sur une image minimale) : X sert uniquement de surface d'affichage pour
-# station_gui.py.
+# station.py (l'outil unique, GUI sans argument).
 set -eu
 
 # Pas de mise en veille/écran noir sur un poste qui doit rester lisible en continu.
@@ -12,4 +12,4 @@ xset -dpms
 xset s off
 xset s noblank
 
-exec python3 "$(dirname "$0")/../tools/station_gui.py"
+exec python3 "$(dirname "$0")/../tools/station.py"

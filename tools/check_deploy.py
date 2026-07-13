@@ -8,23 +8,20 @@ passation) : kernel vendor attendu, racine sur NVMe, absence des erreurs NPU
 connues dans dmesg, nœuds DRI présents, et — en option — un smoke test
 d'inférence NPU.
 
-Deux usages, même logique :
+Deux usages, même logique (`run_checks()`) :
   - CLI headless (ex. en SSH, après un flash à la pince depuis un banc) :
-        sudo python3 check_deploy.py
-        sudo python3 check_deploy.py --npu-cmd "python3 infer_rknn.py \\
+        sudo odroid-station check
+        sudo odroid-station check --npu-cmd "python3 infer_rknn.py \\
             --model best_rknn_model/best.rknn --benchmark --runs 20"
-  - importé par la GUI `spi_flash_gui.py` (section « Vérif déploiement ») via
-    `run_checks()`.
+  - onglet « Vérification » du tableau de bord (`verify_panel.VerifyPanel`).
 
 Les PARSERS (pur, testés) vivent dans `spi_core` ; ici on ne fait que lancer les
 commandes système et agréger le GO/NO-GO. `dmesg` nécessite souvent root -> lancer
 en `sudo`, sinon le contrôle dmesg est marqué illisible.
 """
 
-import argparse
 import os
 import subprocess
-import sys
 
 import spi_core as sc
 
@@ -79,21 +76,3 @@ def run_checks(npu_cmd=None):
 
     go = all(ok for _, ok, _ in results)
     return results, go
-
-
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Vérif post-déploiement Odroid-M1.")
-    p.add_argument("--npu-cmd",
-                   help="commande de benchmark NPU à lancer (optionnel), ex. "
-                        "\"python3 infer_rknn.py --model m.rknn --benchmark --runs 20\"")
-    args = p.parse_args(argv)
-
-    results, go = run_checks(npu_cmd=args.npu_cmd)
-    for name, ok, msg in results:
-        print(f"[{'OK ' if ok else 'NON'}] {name} : {msg}")
-    print(f"\n=== {'GO' if go else 'NO-GO'} ===")
-    return 0 if go else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -53,10 +53,10 @@ sudo reboot
 
 `install.sh` installe **toutes** les dépendances (flashrom, u-boot-tools, clonage,
 X minimal sans gestionnaire de bureau) et un **service systemd**
-(`odroid-station`, cible `graphical.target`) qui lance le **tableau de bord
-unifié** (`station_gui.py`, plein écran, 3 onglets : SPI / Clone NVMe /
-Vérification) dès le démarrage suivant — aucun geste manuel après le premier boot.
-Idempotent (relançable après un `git pull`).
+(`odroid-station`, cible `graphical.target`) qui lance **l'outil unique**
+(`station.py`, plein écran, 3 onglets : SPI / Clone-Image / Vérification) dès le
+démarrage suivant — aucun geste manuel après le premier boot. Idempotent
+(relançable après un `git pull`).
 
 ```bash
 journalctl -u odroid-station -f      # déboguer le service
@@ -64,9 +64,9 @@ sudo systemctl disable odroid-station  # désactiver le boot kiosque si besoin
 ```
 
 Détail : [`../README.md`](../README.md). Les étapes ci-dessous (3 à 8) référencent
-les **onglets** du tableau de bord (`sudo odroid-station`) ; les outils
-individuels (`odroid-spi-flash`, `odroid-clone`, `odroid-check-deploy`) restent
-disponibles pour un usage manuel/dev — même code, mêmes actions.
+les **onglets** du tableau de bord (`sudo odroid-station`) ; **le même outil** en
+SSH sans X11 expose chaque action en sous-commande (`odroid-station clone|image|
+spi|check`, voir `odroid-station --help`) — même code, mêmes garde-fous.
 
 | Poste (si pas d'install dédiée) | Outils |
 |-------|--------|
@@ -87,9 +87,9 @@ la puce SPI :
 
 ```bash
 sudo odroid-station            # onglet "SPI (Golden / Flash / Env)"
-# (ou l'outil seul : sudo odroid-spi-flash / sudo python3 tools/spi_flash_gui.py)
+# ou en SSH : sudo odroid-station spi read
 ```
-Programmer = **« Pince CH341A »** → **« Lire le master → golden »**. L'outil :
+Programmer = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
 1. lit les 16 MiO (`flashrom -p ch341a_spi -r …`) ;
 2. valide (taille exacte, image non vierge, bannière `U-Boot`) — refuse sinon ;
 3. écrit `images/spi/golden_spi_16MiB.bin` + `.sha256` ;
@@ -118,7 +118,7 @@ lsblk -o NAME,UUID,PARTUUID /dev/nvme0n1     # comparer
 ```
 Si l'UUID du `boot.scr` **diffère** de celui de `nvme0n1p2` (cas connu :
 `eee2b90d…` vs `a9bdb4f9…`), le master boote peut-être « par coïncidence ».
-`clone_odroid_gui.py` rend ça inoffensif pour le **clone** (il remappe cet
+Le moteur de clonage rend ça inoffensif pour le **clone** (il remappe cet
 identifiant vers l'identité neuve, cf. `extract_root_ids`), mais clarifier l'origine
 sur le master évite de perpétuer une config bancale.
 
@@ -136,9 +136,10 @@ valeur), **ou** flasher par-partition (mtd0/mtd2 seuls) + `fw_setenv` par unité
 ## 5. Étape 3 — Flasher la SPI d'une unité
 
 `sudo odroid-station` (onglet SPI) → choisir le **Programmer**, puis **« Flasher
-cette unité avec le golden »**. L'outil sauvegarde d'abord la puce cible (`preflash_backups/`), contrôle
-le golden (taille + signature + SHA256 == manifeste), demande confirmation, écrit et
-vérifie.
+cette unité avec le golden »** — ou en SSH :
+`sudo odroid-station spi flash [--programmer internal]`. L'outil sauvegarde
+d'abord la puce cible (`preflash_backups/`), contrôle le golden (taille +
+signature + SHA256 == manifeste), demande confirmation, écrit et vérifie.
 
 - **Pince CH341A** (recommandé, robuste) : unité **hors tension**, marche même sur une
   carte vierge/briquée.
@@ -177,13 +178,15 @@ sudo fw_setenv bootcmd_nvme 'setenv devnum 0; run nvme_boot'
 
 ---
 
-## 7. Étape 5 — Cloner le NVMe vers l'unité
+## 7. Étape 5 — Cloner le NVMe vers l'unité (ou en faire une image compacte)
 
 Depuis ce poste ou un **PC Linux** (clone à FROID : NVMe cible branché en USB,
 jamais le disque système) :
 ```bash
-sudo odroid-station            # onglet "Clone NVMe"
-# (ou l'outil seul : sudo odroid-clone / sudo python3 tools/clone_odroid_gui.py)
+sudo odroid-station            # onglet "Clone / Image"
+# ou en SSH :
+sudo odroid-station clone --source /dev/sda --dest /dev/nvme0n1
+sudo odroid-station clone --image images/nvme/odroid_m1_nvme.img --dest /dev/nvme0n1
 ```
 - **Mode de boot = « SPI »** (défaut) : le clone reçoit une identité neuve
   (UUID/PARTUUID), fstab + `boot.scr` (CRC recalculés, `cma=128M` préservé) + initramfs
@@ -193,6 +196,26 @@ sudo odroid-station            # onglet "Clone NVMe"
 
 Le clone ne bootera que sur une carte dont la **SPI porte le golden** (§5).
 
+**Image disque compacte (source de clonage).** Destination « Fichier image
+compact » dans l'onglet, ou en SSH :
+```bash
+sudo odroid-station image --source /dev/sda --out images/nvme/odroid_m1_nvme.img
+```
+L'image est **taillée sur l'espace UTILISÉ** de la racine (pas la capacité du
+disque : un NVMe 128 Go rempli à 20 % → ~30 Go) et **sparse**. Au clonage depuis
+l'image, la racine est ré-étendue à la taille de la cible.
+
+**Auto-clonage / auto-imagerie à CHAUD.** Pour cloner (ou imager) le disque de
+l'Odroid **sur lequel la station tourne** : case « Auto-clonage à CHAUD » dans
+l'onglet, ou `--live` en SSH :
+```bash
+sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
+sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
+```
+Un instantané à chaud n'est jamais parfaitement cohérent : **arrêter les services
+qui écrivent** avant de lancer, et préférer le clone à froid pour un master de
+flotte. Le disque système reste **refusé en destination**, quoi qu'il arrive.
+
 ---
 
 ## 8. Étape 6 — Vérification post-déploiement (GO/NO-GO)
@@ -200,9 +223,9 @@ Le clone ne bootera que sur une carte dont la **SPI porte le golden** (§5).
 **Sur l'unité** flashée + clonée — onglet **« Vérification »** du tableau de bord
 (`sudo odroid-station`), ou en headless (SSH, flash fait depuis un autre poste) :
 ```bash
-sudo odroid-check-deploy       # (ou : sudo python3 tools/check_deploy.py)
+sudo odroid-station check
 # avec smoke test NPU (infer_rknn.py fait partie de l'install Harvest sur l'unité) :
-sudo odroid-check-deploy \
+sudo odroid-station check \
     --npu-cmd "python3 infer_rknn.py --model best_rknn_model/best.rknn --benchmark --runs 20"
 ```
 
@@ -239,7 +262,7 @@ Si l'on ne part pas d'un flash de golden :
    **option 7** (flash SPI — **PAS** l'option 4 qui installe un rootfs Armbian).
 2. Appliquer les 4 `fw_setenv` (§6).
 3. Ajouter `cma=128M` au `boot.scr` du NVMe (méthode heredoc, §9).
-4. `check_deploy.py` (§8).
+4. `sudo odroid-station check` (§8).
 
 Puis, pour les suivantes, préférer le **golden** (§3-§5) : plus rapide et fidèle.
 

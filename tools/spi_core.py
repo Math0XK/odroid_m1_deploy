@@ -2,8 +2,9 @@
 """
 spi_core.py — logique PURE (sans interface ni matériel) de la chaîne SPI Odroid.
 
-Séparé de `spi_flash_gui.py` (l'interface tkinter + les appels flashrom/fw_setenv)
-sur le même principe que `clone_core.py` / `clone_odroid_gui.py` : tout ce qui est
+Séparé de `spi_panel.py`/`spi_ops.py` (l'interface tkinter + les appels
+flashrom/fw_setenv) sur le même principe que `clone_core.py` / `clone_panel.py` :
+tout ce qui est
 testable sans puce SPI ni flashrom vit ici (`tests/test_spi_core.py`).
 
 Couvre :

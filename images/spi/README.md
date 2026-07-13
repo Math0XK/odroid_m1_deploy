@@ -25,8 +25,9 @@ Sur le **master** (celui qui boote déjà correctement), à la **pince CH341A** 
 hors tension) :
 
 ```bash
-sudo odroid-spi-flash          # (ou : sudo python3 ../../tools/spi_flash_gui.py)
-# Programmer = « Pince CH341A » → bouton « Lire le master → golden »
+sudo odroid-station            # onglet SPI, Programmer = « Pince CH341A »
+                               # → bouton « Lire la puce → golden »
+sudo odroid-station spi read   # équivalent en SSH sans X11
 ```
 
 L'outil valide le dump (16 MiO, non vierge, bannière « U-Boot ») avant de l'écrire
@@ -37,9 +38,11 @@ flasher la flotte.
 ## Flasher une unité
 
 ```bash
-sudo odroid-spi-flash          # (ou : sudo python3 ../../tools/spi_flash_gui.py)
-# Choisir le Programmer (pince CH341A hors tension, ou on-device internal en SSH)
-# → « Flasher cette unité avec le golden »  (backup pré-flash automatique)
+sudo odroid-station            # onglet SPI : choisir le Programmer (pince CH341A
+                               # hors tension, ou « Cette machine — internal »)
+                               # → « Flasher cette unité avec le golden »
+sudo odroid-station spi flash --programmer internal   # équivalent SSH (backup
+                               # pré-flash automatique)
 ```
 
-Puis vérifier **sur l'unité** : `sudo odroid-check-deploy`.
+Puis vérifier **sur l'unité** : `sudo odroid-station check`.

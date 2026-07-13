@@ -4,12 +4,12 @@ clone_engine.py — MOTEUR du clonage de disque Odroid (sans interface).
 
 Toute la mécanique à état du clonage (montages, rsync, mkfs, réécriture
 d'identité, initramfs, progression) vit ici, derrière deux callbacks (`log` et
-`progress`) : la GUI tkinter (`clone_odroid_gui.ClonePanel`) et le CLI headless
-(`clone_cli.py`) pilotent LE MÊME moteur — pas de duplication, mêmes garde-fous
-des deux côtés. La logique pure sans état (blkid, sfdisk, patch boot.scr…)
-reste dans `clone_core.py` (testée sans matériel).
+`progress`) : l'onglet GUI (`clone_panel.ClonePanel`) et les sous-commandes CLI
+(`station.py clone` / `station.py image`) pilotent LE MÊME moteur — pas de
+duplication, mêmes garde-fous des deux côtés. La logique pure sans état (blkid,
+sfdisk, patch boot.scr…) reste dans `clone_core.py` (testée sans matériel).
 
-Voir le docstring de `clone_odroid_gui.py` pour le POURQUOI de chaque étape
+Voir le docstring de `clone_panel.py` pour le POURQUOI de chaque étape
 (clone à froid, mode de boot SPI vs disque, identité neuve, initramfs…) — ce
 fichier n'en est que le COMMENT.
 """
@@ -26,8 +26,8 @@ import time
 from clone_core import (
     BOOTLOADER_FIRST_SECTOR, blkid_value, bootloader_gap_present,
     build_dst_script, disk_label_id, extract_root_ids, fs_used, gen_label_id,
-    is_system_mp, parse_start_size, part_name, rewrite_uboot_script, run,
-    storage_modules,
+    image_size_bytes, is_system_mp, parse_start_size, part_name,
+    rewrite_uboot_script, run, storage_modules,
 )
 
 
@@ -101,26 +101,48 @@ class CloneEngine:
     « spi » (défaut, flotte) ou « disk » (legacy eMMC/SD auto-bootable) ;
     `boot_medium` est le disque du support de boot séparé legacy, ou None.
 
-    `clone()` est le seul point d'entrée : il gère le losetup éventuel, le
-    nettoyage (démontages, détachement loop) même en cas d'erreur, LÈVE en cas
-    d'échec, et retourne le message de fin adapté au mode choisi.
+    `live=True` autorise le disque SYSTÈME en source : auto-clonage (ou
+    auto-imagerie) de l'Odroid sur lequel le script tourne. La source n'est
+    alors PAS remontée read-only (impossible sur « / ») : on lit les montages
+    vivants tels quels, et rsync tolère les fichiers qui disparaissent en cours
+    de copie (code 24). Un instantané à chaud n'est jamais parfaitement
+    cohérent : arrêter ce qui écrit (services applicatifs) avant de lancer, et
+    préférer le clone à froid pour un master de flotte. Le garde-fou
+    `assert_not_system_disk` reste ABSOLU pour la destination.
+
+    Deux points d'entrée : `clone()` (disque ou image -> disque) et
+    `make_image()` (disque -> fichier image COMPACT, futur `--image` de clone()).
+    Chacun gère le losetup éventuel, le nettoyage (démontages, détachement loop)
+    même en cas d'erreur, LÈVE en cas d'échec, et retourne le message de fin.
     """
 
-    def __init__(self, log, progress=None, boot_mode="spi", boot_medium=None):
+    def __init__(self, log, progress=None, boot_mode="spi", boot_medium=None,
+                 live=False):
         if boot_mode not in ("spi", "disk"):
             raise ValueError(f"boot_mode inconnu : {boot_mode!r} (attendu 'spi' ou 'disk')")
         self.log = log
         self._progress = progress if progress is not None else (lambda pct, text: None)
         self.boot_mode = boot_mode
         self.boot_medium = boot_medium
+        self.live = live
         self.loop_dev = None
         self._cleanup_mounts = []     # points de montage créés PAR NOUS (cleanup)
         self._poll_stop = None
         self._id_subs = {}
+        self._extra_root_excludes = []   # ex. l'image en cours d'écriture (live)
 
     # ---------- Point d'entrée ----------
+    def _warn_if_live(self):
+        if self.live:
+            self.log("⚠ MODE LIVE : la source est le système EN MARCHE. "
+                     "L'instantané n'est pas parfaitement cohérent — arrête ce "
+                     "qui écrit (services applicatifs, bases de données) avant "
+                     "de lancer. Pour un master de flotte, préfère le clone à "
+                     "froid.")
+
     def clone(self, src_disk, dst_disk, img_path=None):
         try:
+            self._warn_if_live()
             if img_path:
                 self.log(f"Attachement de l'image {img_path} en loop device...")
                 loop = run(["losetup", "--find", "--show", "-P", img_path]).strip()
@@ -147,20 +169,114 @@ class CloneEngine:
                         "seul depuis le disque — il faut une carte ODROID-M1 dont la "
                         "PUCE SPI porte le golden (u-boot Armbian). Sur une telle "
                         "carte, u-boot cible le NVMe en premier et boote le clone. "
-                        "Flashe la SPI avec spi_flash_gui.py, puis vérifie avec "
-                        "check_deploy.py.")
+                        "Flashe la SPI (onglet SPI, ou odroid-station spi "
+                        "flash), puis vérifie avec odroid-station check.")
             return ("Clonage terminé avec succès.\n\nLe clone possède ses propres "
                     "UUID/PARTUUID (identité régénérée, fstab + boot + initramfs "
                     "mis à jour). Mode disque : pour démarrer sur le clone, règle "
                     "l'ordre de boot (ou retire la source / la SD).")
         finally:
-            self._stop_progress_poll()
-            for mp in reversed(self._cleanup_mounts):
+            self._cleanup()
+
+    def make_image(self, src_disk, img_path, margin=1.25):
+        """Crée une IMAGE DISQUE COMPACTE de `src_disk` dans le fichier
+        `img_path`, utilisable ensuite comme source de clonage (GUI « Fichier
+        image » / CLI `--image`).
+
+        Même pipeline que le clonage disque -> disque (`_do_clone` : identité
+        neuve, fstab/boot.scr réécrits, initramfs), mais la destination est un
+        fichier attaché en loop device et DIMENSIONNÉ sur l'espace UTILISÉ de la
+        racine source, pas sur la capacité du disque (`image_size_bytes`) : un
+        NVMe 128 Go rempli à 20 % donne une image ~30 Go, pas 128. Deux
+        mécanismes se cumulent :
+          - géométrie : la racine de l'image remplit un fichier taillé au plus
+            juste, et sera RÉ-ÉTENDUE à la taille de la vraie cible au clonage
+            depuis l'image (le size= de la dernière partition saute des deux
+            côtés) ;
+          - fichier SPARSE (truncate) : seuls les octets réellement écrits
+            occupent le disque hôte.
+        En cas d'échec, le fichier partiel est SUPPRIMÉ (une image tronquée qui
+        traîne finirait par servir de source de clonage).
+        """
+        created = False
+        try:
+            self._warn_if_live()
+            # En live, l'image peut être écrite SUR le disque qu'on est en train
+            # d'imager : il faut l'exclure de la copie, sinon rsync copierait
+            # dans l'image le fichier image lui-même (en cours d'écriture via le
+            # loop device -> des gigaoctets d'auto-référence).
+            if self.live:
+                self._extra_root_excludes.append(os.path.realpath(img_path))
+            p2_start, root_used = self._measure_for_image(src_disk)
+            size = image_size_bytes(p2_start, root_used, margin=margin)
+            self.log(f"Racine source : {root_used / 1e9:.1f} Go utilisés -> "
+                     f"image compacte de {size / 1e9:.1f} Go (marge métadonnées "
+                     "incluse), fichier sparse.")
+            with open(img_path, "wb") as f:
+                f.truncate(size)               # sparse : aucun octet écrit
+            created = True
+            loop = run(["losetup", "--find", "--show", "-P", img_path]).strip()
+            self.loop_dev = loop
+            self.log(f"Image attachée en loop device : {loop}")
+
+            self._do_clone(src_disk, loop)
+
+            # Détache AVANT la mesure finale : c'est le détachement qui garantit
+            # que tout le cache du loop est retombé dans le fichier.
+            run(["losetup", "-d", loop], check=False)
+            self.loop_dev = None
+            st = os.stat(img_path)
+            real = st.st_blocks * 512
+            self.log(f"\n=== IMAGE CRÉÉE ===\n{img_path}\n"
+                     f"Taille logique : {st.st_size / 1e9:.1f} Go — occupé réel "
+                     f"(sparse) : {real / 1e9:.1f} Go.")
+            return (f"Image compacte créée : {img_path}\n\n"
+                    f"Taille logique {st.st_size / 1e9:.1f} Go, occupé réel "
+                    f"{real / 1e9:.1f} Go (fichier sparse : préserver les trous "
+                    "avec `cp --sparse=always` / `rsync -S`, ou compresser en "
+                    ".zst pour la distribuer).\n\n"
+                    "Utilisable comme SOURCE de clonage : onglet Clone -> "
+                    "« Fichier image », ou odroid-station clone --image … --dest "
+                    "/dev/nvme0n1 (la racine sera ré-étendue à la taille de la "
+                    "cible).")
+        except BaseException:
+            if created:
+                self._cleanup()          # détache le loop AVANT de supprimer
+                try:
+                    os.remove(img_path)
+                    self.log(f"Image partielle supprimée : {img_path}")
+                except OSError:
+                    pass
+            raise
+        finally:
+            self._cleanup()
+
+    def _cleanup(self):
+        """Nettoyage idempotent : arrêt du poll, démontages, détachement loop."""
+        self._stop_progress_poll()
+        for mp in reversed(self._cleanup_mounts):
+            subprocess.run(["umount", mp], capture_output=True)
+        self._cleanup_mounts = []
+        if self.loop_dev:
+            subprocess.run(["losetup", "-d", self.loop_dev], capture_output=True)
+            self.loop_dev = None
+
+    def _measure_for_image(self, src_disk):
+        """(début de p2 en secteurs, octets utilisés de la racine source),
+        mesurés sur un montage read-only éphémère (démonté aussitôt — _do_clone
+        remontera la source proprement ensuite)."""
+        src_p2 = part_name(src_disk, 2)
+        sfdisk_out = run(["sfdisk", "-d", src_disk])
+        p2_start, _ = parse_start_size(sfdisk_out, src_p2)
+        mp = self._source_access(src_p2, "/mnt/clone_measure_root")
+        try:
+            return p2_start, fs_used(mp)
+        finally:
+            # ne démonte que ce que NOUS avons monté (jamais un montage vivant
+            # utilisé en mode live, comme « / »)
+            if mp in self._cleanup_mounts:
                 subprocess.run(["umount", mp], capture_output=True)
-            self._cleanup_mounts = []
-            if self.loop_dev:
-                subprocess.run(["losetup", "-d", self.loop_dev], capture_output=True)
-                self.loop_dev = None
+                self._cleanup_mounts.remove(mp)
 
     # ---------- rsync ----------
     def _rsync(self, src, dst, dst_fstype="ext4", extra_excludes=None):
@@ -177,11 +293,18 @@ class CloneEngine:
             # remappe les propriétaires par NOM et le clone ne boote plus).
             attempts = [["-aHAX", "--numeric-ids"], ["-aH", "--numeric-ids"]]
 
+        # En live (source = système en marche), des fichiers peuvent disparaître
+        # entre le listage et la copie : rsync sort alors en 24 — toléré. Toute
+        # autre erreur reste fatale.
+        ok_codes = (0, 24) if self.live else (0,)
         last = None
         for flags in attempts:
             r = subprocess.run(["rsync", *flags, *excludes, src, dst],
                                capture_output=True, text=True)
-            if r.returncode == 0:
+            if r.returncode in ok_codes:
+                if r.returncode == 24:
+                    self.log("rsync : des fichiers ont disparu pendant la copie "
+                             "(code 24, normal sur un système en marche).")
                 return
             last = r
             self.log(f"rsync {' '.join(flags)} a échoué (code {r.returncode}), "
@@ -230,12 +353,28 @@ class CloneEngine:
         self._cleanup_mounts.append(mountpoint)
 
     def _source_access(self, part, fallback_mp):
-        """Monte une partition source en LECTURE SEULE et retourne son chemin.
+        """Chemin de lecture d'une partition source.
 
-        La source n'est jamais le système en marche (garde-fou en amont) : on
-        peut démonter son éventuel auto-montage (udisks2, en lecture-écriture) et
-        la remonter read-only pour lire un instantané cohérent et figé.
+        Cas normal (clone à froid) : la source n'est jamais le système en marche
+        (garde-fou en amont), on démonte son éventuel auto-montage (udisks2, en
+        lecture-écriture) et on la remonte read-only pour lire un instantané
+        cohérent et figé.
+
+        Cas `live` (auto-clonage du système en marche) : impossible de remonter
+        « / » en read-only — si la partition est déjà montée on lit son montage
+        vivant TEL QUEL (le plus court des points de montage : « / » avant un
+        éventuel bind), sans jamais y toucher ; si elle ne l'est pas (partition
+        BOOT souvent non montée), montage read-only classique.
         """
+        if self.live:
+            mps = sorted(all_mountpoints(part), key=len)
+            if mps:
+                self.log(f"Live : lecture de {part} via son montage vivant "
+                         f"{mps[0]} (non remonté read-only).")
+                return mps[0]
+            self._mount(part, fallback_mp, ro=True,
+                        fstype=blkid_value(part, "TYPE") or None)
+            return fallback_mp
         self._force_unmount(part)
         self._mount(part, fallback_mp, ro=True,
                     fstype=blkid_value(part, "TYPE") or None)
@@ -289,7 +428,7 @@ class CloneEngine:
                     "Mode SPI : pas de bootloader sur le disque (normal) — le "
                     "boot passe par la puce SPI + u-boot. Zone bootloader ignorée.")
             self.log("→ Le clone ne bootera que sur une carte dont la SPI "
-                     "porte le golden (voir spi_flash_gui.py).")
+                     "porte le golden (onglet SPI / odroid-station spi flash).")
             return
 
         count = p1_start - BOOTLOADER_FIRST_SECTOR
@@ -713,7 +852,7 @@ class CloneEngine:
             f"{src_root}/", "/mnt/clone_dst_root/",
             extra_excludes=["/proc/*", "/sys/*", "/dev/*", "/tmp/*", "/run/*",
                             "/mnt/*", "/media/*", "/lost+found", "/var/tmp/*",
-                            "/var/swap"],
+                            "/var/swap", *self._extra_root_excludes],
         )
 
         # Recrée les points de montage exclus, avec les BONS droits (un /tmp

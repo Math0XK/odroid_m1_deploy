@@ -39,9 +39,9 @@ fi
 
 # --- Bootstrap (curl | sh) : pas de checkout à côté de ce script -> on clone ---
 # Détection : lancé depuis un pipe, $0 vaut "sh" (ou similaire) et il n'y a pas
-# de tools/station_gui.py à côté. Depuis un checkout, le fichier existe.
+# de tools/station.py à côté. Depuis un checkout, le fichier existe.
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /nonexistent)"
-if [ ! -f "$SCRIPT_DIR/tools/station_gui.py" ]; then
+if [ ! -f "$SCRIPT_DIR/tools/station.py" ]; then
     echo "Aucun checkout local détecté : bootstrap depuis $REPO_URL…"
     if ! command -v git >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
@@ -78,21 +78,21 @@ else
     echo "  xserver-xorg, xinit, x11-xserver-utils."
 fi
 
-# --- Lanceurs (utiles aussi sur le poste kiosque, pour du debug manuel) ---
+# --- Lanceur UNIQUE : odroid-station (GUI sans argument, CLI en sous-commandes) ---
 BIN=/usr/local/bin
-make_launcher() {  # $1 = nom du lanceur, $2 = script dans tools/
-    tmp="$(mktemp)"
-    printf '#!/usr/bin/env sh\nexec python3 "%s/tools/%s" "$@"\n' "$PKG" "$2" > "$tmp"
-    $SUDO install -m 0755 "$tmp" "$BIN/$1"
-    rm -f "$tmp"
-    echo "  $BIN/$1 -> tools/$2"
-}
-echo "Création des lanceurs dans $BIN…"
-make_launcher odroid-station       station_gui.py
-make_launcher odroid-spi-flash     spi_flash_gui.py
-make_launcher odroid-clone         clone_odroid_gui.py
-make_launcher odroid-clone-cli     clone_cli.py
-make_launcher odroid-check-deploy  check_deploy.py
+echo "Création du lanceur dans $BIN…"
+tmp="$(mktemp)"
+printf '#!/usr/bin/env sh\nexec python3 "%s/tools/station.py" "$@"\n' "$PKG" > "$tmp"
+$SUDO install -m 0755 "$tmp" "$BIN/odroid-station"
+rm -f "$tmp"
+echo "  $BIN/odroid-station -> tools/station.py"
+# Ménage : lanceurs des anciennes versions (outils désormais fusionnés).
+for old in odroid-spi-flash odroid-clone odroid-clone-cli odroid-check-deploy; do
+    if [ -e "$BIN/$old" ]; then
+        $SUDO rm -f "$BIN/$old"
+        echo "  (ancien lanceur $old supprimé)"
+    fi
+done
 
 # --- Vérif du golden si présent ---
 GOLDEN="$PKG/images/spi/golden_spi_16MiB.bin"
@@ -101,7 +101,8 @@ if [ -f "$GOLDEN" ] && [ -f "$GOLDEN.sha256" ]; then
     ( cd "$PKG/images/spi" && sha256sum -c "$(basename "$GOLDEN").sha256" )
 else
     echo "ℹ Pas encore de golden SPI ($GOLDEN) — le produire avec 'odroid-station'"
-    echo "  (onglet SPI → « Lire le master → golden ») puis le committer."
+    echo "  (onglet SPI → « Lire la puce → golden », ou 'odroid-station spi read')"
+    echo "  puis le committer."
 fi
 
 # --- Service systemd : boot kiosque (X + tableau de bord plein écran) ---
@@ -125,12 +126,15 @@ fi
 
 cat <<EOF
 
-Installé. Usage manuel (root requis pour flasher / cloner / écrire l'env) :
-  sudo odroid-station          # tableau de bord unifié (SPI + Clone + Vérif)
-  sudo odroid-spi-flash        # golden / flash flotte / env (GUI, seul)
-  sudo odroid-clone            # clonage NVMe (GUI, seul)
-  sudo odroid-clone-cli        # clonage NVMe headless (SSH sans X11) : --help
-  sudo odroid-check-deploy     # vérif post-déploiement GO/NO-GO (CLI headless)
+Installé. UN SEUL outil : odroid-station (root requis pour flasher / cloner).
+  sudo odroid-station                  # tableau de bord graphique (3 onglets)
+En SSH sans X11, les mêmes opérations en sous-commandes :
+  sudo odroid-station list             # disques détectés
+  sudo odroid-station clone …          # clonage disque/image -> disque
+  sudo odroid-station image …          # image disque COMPACTE (source de clonage)
+  sudo odroid-station spi …            # read / verify / flash / env-apply / env-save
+  sudo odroid-station check            # vérif post-déploiement GO/NO-GO
+  odroid-station --help                # détail des options (--live, --sim, …)
 
 Runbook : $PKG/docs/DEPLOIEMENT_FLOTTE.md
 EOF

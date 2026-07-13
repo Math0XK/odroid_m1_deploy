@@ -1,8 +1,10 @@
 # odroid_m1_deploy — poste de déploiement de flotte Odroid-M1
 
-Outil **autonome** de duplication d'une carte Odroid-M1 de production (RK3568) :
-sauvegarde/flash du bootloader **SPI**, clonage du **NVMe** (GUI **et** CLI
-headless), et vérification post-déploiement. Conçu comme un **poste dédié** :
+**Un seul outil** (`odroid-station`) pour dupliquer une carte Odroid-M1 de
+production (RK3568) : sauvegarde/flash du bootloader **SPI**, clonage du
+**NVMe**, création d'**images disque compactes** (source de clonage),
+auto-clonage de la machine en marche, et vérification post-déploiement — en
+graphique **et** en ligne de commande (SSH). Conçu comme un **poste dédié** :
 sur une image Ubuntu/Armbian fraîche et minimale (sans bureau graphique), **une
 seule ligne de commande** installe tout — le tableau de bord se lance ensuite
 automatiquement, plein écran, à chaque démarrage (service systemd, boot
@@ -23,11 +25,11 @@ sudo reboot
 Le script se bootstrappe tout seul : il installe `git`, clone ce repo dans
 `/opt/odroid_m1_deploy`, installe **tout** (flashrom, u-boot-tools, clonage
 sfdisk/rsync/…, X minimal `xserver-xorg`/`xinit` — **pas** de GDM/LightDM/window
-manager), crée les lanceurs, et installe/active le service systemd
-`odroid-station` (cible `graphical.target`) qui lance `station_gui.py` **plein
-écran** dès le prochain démarrage — aucun geste manuel après le premier boot.
-Idempotent : relancer la même ligne met à jour le checkout (`git pull`) et
-réinstalle par-dessus.
+manager), crée le lanceur unique `odroid-station`, et installe/active le
+service systemd `odroid-station` (cible `graphical.target`) qui lance l'outil
+**plein écran** dès le prochain démarrage — aucun geste manuel après le premier
+boot. Idempotent : relancer la même ligne met à jour le checkout (`git pull`)
+et réinstalle par-dessus.
 
 Depuis un checkout local, l'équivalent classique marche aussi :
 
@@ -37,64 +39,95 @@ cd odroid_m1_deploy
 sudo ./install.sh
 ```
 
-Lanceurs créés dans `/usr/local/bin` (utiles aussi pour du debug manuel sur le
-poste kiosque) :
+## L'outil unique : `odroid-station`
+
+Sans argument : **tableau de bord graphique** plein écran, 3 onglets (identique
+au lancement automatique du boot kiosque). `Échap`/`F11` bascule le plein écran.
 
 ```bash
-sudo odroid-station          # tableau de bord unifié (identique au boot auto)
-sudo odroid-spi-flash        # onglet SPI seul (golden / flash flotte / env)
-sudo odroid-clone            # onglet Clone seul (clonage NVMe, GUI)
-sudo odroid-clone-cli        # clonage NVMe HEADLESS (SSH sans X11) : --help
-sudo odroid-check-deploy     # vérif post-déploiement GO/NO-GO (CLI headless SSH)
+sudo odroid-station
 ```
 
-Débogage du service : `journalctl -u odroid-station -f`. `Échap`/`F11` dans l'app
-bascule le plein écran (utile en debug via SSH -X / VNC).
+Avec une sous-commande : les **mêmes opérations en CLI headless** (SSH sans
+X11), mêmes moteurs, mêmes garde-fous :
+
+```bash
+sudo odroid-station list                                        # disques détectés
+sudo odroid-station clone --source /dev/sda --dest /dev/nvme0n1 # clonage à froid
+sudo odroid-station clone --image master.img --dest /dev/nvme0n1
+sudo odroid-station image --source /dev/sda --out master.img    # image COMPACTE
+sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
+sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
+sudo odroid-station spi read                                    # puce SPI -> golden
+sudo odroid-station spi flash --programmer internal             # golden -> puce locale
+sudo odroid-station spi verify | env-apply | env-save
+sudo odroid-station check                                       # GO/NO-GO sur l'unité
+```
+
+Points notables :
+
+- **Image compacte** : `image` (ou destination « Fichier image compact » dans
+  l'onglet Clone / Image) produit une image **taillée sur l'espace UTILISÉ** de
+  la racine, pas sur la capacité du disque — un NVMe 128 Go rempli à 20 % donne
+  ~30 Go, en fichier **sparse**. Au clonage depuis l'image, la racine est
+  ré-étendue à la taille de la cible.
+- **`--live`** (ou case « Auto-clonage à CHAUD ») : autorise le disque
+  **système** de la machine en source, pour cloner/imager l'Odroid sur lequel
+  la station tourne. Arrêter les services qui écrivent avant ; préférer le
+  clone à froid pour un master de flotte. Le disque système reste **refusé en
+  destination**, toujours.
+- **SPI de la machine locale** : programmer `internal` (GUI : « Cette
+  machine ») pour lire/sauvegarder/reflasher la puce SPI de l'Odroid où le
+  script tourne ; `ch341a_spi` (défaut) pour la pince, carte hors tension.
+- `--sim` (ou case « Mode simulation ») : journalise les commandes exactes sans
+  rien exécuter.
+
+Débogage du service kiosque : `journalctl -u odroid-station -f`.
 
 ## Structure
 
 ```
 odroid_m1_deploy/
-  install.sh                   installeur Linux une-ligne : bootstrap git +
-                                deps + lanceurs + boot kiosque
+  install.sh                installeur Linux une-ligne : bootstrap git + deps +
+                             lanceur unique + boot kiosque
   tools/
-    station_gui.py             POINT D'ENTRÉE du poste : tableau de bord unifié
-                                (Notebook 3 onglets, plein écran)
-    spi_core.py                logique pure SPI + parsers de vérif (testée)
-    spi_flash_gui.py           SpiPanel (onglet SPI) + lançable seul (dev)
-    clone_core.py              logique pure du clonage (testée)
-    clone_engine.py            MOTEUR du clonage (sans UI) — partagé GUI/CLI
-    clone_odroid_gui.py        ClonePanel (onglet Clone) + lançable seul (dev)
-    clone_cli.py               clonage headless (SSH sans X11) : --list/--source/
-                                --dest/--boot-mode/--yes
-    verify_panel.py            VerifyPanel (onglet Vérif) + lançable seul (dev)
-    check_deploy.py            logique de vérif GO/NO-GO (CLI headless + panel)
+    station.py              L'OUTIL (entrée unique) : GUI plein écran sans
+                             argument, CLI en sous-commandes (clone/image/spi/check)
+    spi_core.py             logique pure SPI + parsers de vérif (testée)
+    spi_ops.py              opérations SPI réelles (flashrom/fw_setenv), partagées
+                             GUI/CLI : garde-fous, backup pré-flash, SHA256
+    spi_panel.py            onglet SPI (golden / flash flotte / env)
+    clone_core.py           logique pure du clonage (testée)
+    clone_engine.py         MOTEUR clonage + image compacte + mode live (sans UI)
+    clone_panel.py          onglet Clone / Image
+    verify_panel.py         onglet Vérification
+    check_deploy.py         contrôles GO/NO-GO (module partagé onglet/CLI)
   station/
-    odroid-station.service     unité systemd (boot kiosque, template @REPO_ROOT@)
-    xinitrc                    lance X minimal (sans gestionnaire de fenêtres)
+    odroid-station.service  unité systemd (boot kiosque, template @REPO_ROOT@)
+    xinitrc                 lance X minimal (sans gestionnaire de fenêtres)
   images/
-    spi/                       golden SPI 16 MiO (versionné) + SHA256 + env de référence
-    nvme/                      image disque NVMe complète (à ajouter — voir son README)
+    spi/                    golden SPI 16 MiO (versionné) + SHA256 + env de référence
+    nvme/                   image disque NVMe compacte (à produire — voir son README)
   docs/
-    DEPLOIEMENT_FLOTTE.md      runbook complet (lecture golden → flash → clone → vérif)
+    DEPLOIEMENT_FLOTTE.md   runbook complet (lecture golden → flash → clone → vérif)
     odroid-m1-boot-nvme-npu-handoff.md  note de passation (root causes détaillées)
-  tests/                       tests pure-logique (sans matériel)
+  tests/                    tests pure-logique (sans matériel)
 ```
 
-`station_gui.py` réutilise **le même code** que les 3 outils individuels (`SpiPanel`,
-`ClonePanel`, `VerifyPanel` sont des `ttk.Frame` embarquables), et la GUI comme le
-CLI de clonage pilotent **le même moteur** (`clone_engine.CloneEngine`) — pas de
-duplication, mêmes garde-fous partout (refus du disque système, clone à froid,
-identité neuve).
+GUI et CLI pilotent **les mêmes moteurs** (`clone_engine.CloneEngine`,
+`spi_ops.SpiOps`) — pas de duplication, mêmes garde-fous partout (refus du
+disque système en destination, clone à froid par défaut, identité neuve du
+clone, backup pré-flash de la puce).
 
 ## Démarrage rapide (dans le tableau de bord)
 
-1. **Onglet SPI** : sur le master, à la pince CH341A → « Lire le master → golden »
+1. **Onglet SPI** : sur le master, à la pince CH341A → « Lire la puce → golden »
    → committer `images/spi/golden_spi_16MiB.bin`.
-2. **Onglet SPI** : sur chaque unité (pince ou on-device) → « Flasher cette unité ».
-3. **Onglet Clone** : depuis ce poste (NVMe cible branché en USB) → mode « SPI ».
-   En SSH sans écran : `sudo odroid-clone-cli --source /dev/sdX --dest /dev/nvme0n1`.
-4. **Onglet Vérification** : sur l'unité → GO/NO-GO (`sudo odroid-check-deploy` en SSH).
+2. **Onglet SPI** : sur chaque unité (pince ou `internal`) → « Flasher cette unité ».
+3. **Onglet Clone / Image** : cloner vers le NVMe cible (mode « SPI »), ou créer
+   une image compacte comme source réutilisable. En SSH :
+   `sudo odroid-station clone --source /dev/sdX --dest /dev/nvme0n1`.
+4. **Onglet Vérification** : sur l'unité → GO/NO-GO (`sudo odroid-station check`).
 
 Détail, pièges et déploiement d'une carte neuve : [`docs/DEPLOIEMENT_FLOTTE.md`](docs/DEPLOIEMENT_FLOTTE.md).
 

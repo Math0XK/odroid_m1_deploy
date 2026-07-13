@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
-Panel de vérification post-déploiement (GO/NO-GO) — extrait de `spi_flash_gui.py`
-pour être un onglet à part dans le tableau de bord (`station_gui.py`) : pertinent
-après un flash SPI COMME après un clonage NVMe, pas rattaché à un seul des deux.
+verify_panel.py — onglet Vérification post-déploiement (GO/NO-GO) du tableau de
+bord (`station.py`) : pertinent après un flash SPI COMME après un clonage NVMe,
+pas rattaché à un seul des deux.
 
-Réutilise `check_deploy.run_checks` (même logique que le CLI headless
-`check_deploy.py`, utilisable en SSH quand le flash s'est fait depuis un autre
-poste). `VerifyPanel` est un `ttk.Frame` embarquable ; ce fichier est aussi
-lançable seul (`__main__` en bas) pour l'usage manuel/dev.
+Réutilise `check_deploy.run_checks` — même logique que la sous-commande headless
+`station.py check` (utilisable en SSH quand le flash s'est fait depuis un autre
+poste). `VerifyPanel` est un `ttk.Frame` embarquable.
 """
 
-import os
 import queue
-import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, scrolledtext
 
 import check_deploy
 
@@ -122,15 +119,3 @@ class VerifyPanel(ttk.Frame):
         self.log_write(f"=== {verdict} ===")
         self._ui_queue.put(("verdict", (go, verdict)))
         self._ui_queue.put(("done", None))
-
-
-if __name__ == "__main__":
-    if os.name != "posix":
-        print("Outil Linux (Odroid) : uname, findmnt, dmesg…")
-        sys.exit(1)
-    root = tk.Tk()
-    root.title("Vérification post-déploiement — Odroid-M1")
-    root.geometry("820x560")
-    root.option_add("*Font", "TkDefaultFont 11")
-    VerifyPanel(root).pack(fill="both", expand=True)
-    root.mainloop()
