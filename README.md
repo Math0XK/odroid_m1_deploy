@@ -39,6 +39,22 @@ cd odroid_m1_deploy
 sudo ./install.sh
 ```
 
+## Désinstallation
+
+```bash
+cd /opt/odroid_m1_deploy   # ou le checkout local utilisé pour l'install
+sudo ./uninstall.sh                   # service kiosque + cible de boot + lanceur
+sudo ./uninstall.sh --purge-repo      # + checkout /opt/odroid_m1_deploy
+sudo ./uninstall.sh --purge-packages  # + paquets apt spécifiques au kiosque
+sudo ./uninstall.sh --all             # tout
+sudo reboot
+```
+
+Par défaut, ne touche pas aux paquets apt (plusieurs sont des paquets système
+partagés : `util-linux`, `python3`, `parted`, `rsync`, `dosfstools`,
+`e2fsprogs`) ni au checkout du repo — à demander explicitement via
+`--purge-packages`/`--purge-repo`/`--all`.
+
 ## L'outil unique : `odroid-station`
 
 Sans argument : **tableau de bord graphique** plein écran, 3 onglets (identique
@@ -90,6 +106,8 @@ Débogage du service kiosque : `journalctl -u odroid-station -f`.
 odroid_m1_deploy/
   install.sh                installeur Linux une-ligne : bootstrap git + deps +
                              lanceur unique + boot kiosque
+  uninstall.sh               défait install.sh : service kiosque, cible de
+                             boot, lanceur (+ paquets/checkout en option)
   tools/
     station.py              L'OUTIL (entrée unique) : GUI plein écran sans
                              argument, CLI en sous-commandes (clone/image/spi/check)
