@@ -104,7 +104,9 @@ def flashrom_cmd(op, programmer, path, chip=None):
     """argv flashrom pour une opération, sans l'exécuter.
 
     op ∈ {"read","write","verify"} ; `programmer` est passé tel quel à `-p`
-    (`internal` ou `linux_mtd:dev=0` en on-device, `ch341a_spi` à la pince).
+    (`ch341a_spi` à la pince). Pour la puce EMBARQUÉE à chaud, on ne passe PAS
+    par flashrom mais par les partitions MTD (voir `plan_full_readback` /
+    `flashcp_cmd`) : `internal` n'existe pas sur le flashrom ARM64 d'apt.
     `chip` (option `-c`) n'est utile que si l'auto-détection échoue.
     """
     flag = {"read": "-r", "write": "-w", "verify": "-v"}[op]
@@ -113,6 +115,81 @@ def flashrom_cmd(op, programmer, path, chip=None):
         cmd += ["-c", chip]
     cmd += [flag, path]
     return cmd
+
+
+# --------------------------------------------------------------------------
+# On-device : réassemblage de la puce depuis les partitions MTD
+# --------------------------------------------------------------------------
+# Sur l'Odroid lui-même, `flashrom -p internal` n'existe pas (le flashrom
+# ARM64 d'apt n'est pas compilé avec) et `linux_mtd:dev=N` ne voit qu'UNE
+# partition. Pour lire/flasher la puce ENTIÈRE à chaud, on passe par les
+# partitions MTD (`/proc/mtd` + `/dev/mtdN`) qui pavent les 16 MiO : on lit
+# chaque partition à son offset pour reconstruire l'image, et on flashe par
+# `flashcp` partition par partition.
+def parse_proc_mtd(text):
+    """Parse le contenu de `/proc/mtd` -> liste de partitions.
+
+    Format (une ligne d'en-tête « dev: size erasesize name » puis une ligne
+    par partition) :
+        mtd0: 00080000 00001000 "SPL"
+    Retourne [{'dev':'mtd0','size':0x80000,'erasesize':0x1000,'name':'SPL'}, …]
+    (tailles en octets). Ignore l'en-tête et les lignes non conformes.
+    """
+    parts = []
+    for line in (text or "").splitlines():
+        m = re.match(r'^\s*(mtd\d+):\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+'
+                     r'"(.*)"\s*$', line)
+        if m:
+            parts.append({
+                "dev": m.group(1),
+                "size": int(m.group(2), 16),
+                "erasesize": int(m.group(3), 16),
+                "name": m.group(4),
+            })
+    return parts
+
+
+def plan_full_readback(parts, total=SPI_SIZE):
+    """Ordonne et VALIDE les partitions MTD pour reconstruire la puce entière.
+
+    `parts` : liste de dicts {'dev','offset','size', …}. Retourne la liste
+    triée par offset. Lève `ValueError` si :
+      - deux partitions se chevauchent ;
+      - un trou n'est pas couvert (énumération incomplète) ;
+      - une partition déborde de `total` ;
+      - l'union ne couvre pas exactement [0, total).
+    On refuse un pavage incomplet plutôt que d'écrire un golden troué de 0xFF
+    (brique silencieuse) : sur l'Odroid-M1 les 5 partitions couvrent tout.
+    """
+    if not parts:
+        raise ValueError("aucune partition MTD (/proc/mtd vide ?)")
+    ordered = sorted(parts, key=lambda p: p["offset"])
+    cursor = 0
+    for p in ordered:
+        off, size = p["offset"], p["size"]
+        if off < cursor:
+            raise ValueError(
+                f"partitions MTD qui se chevauchent vers {off:#x} ({p['dev']})")
+        if off > cursor:
+            raise ValueError(
+                f"trou MTD non couvert [{cursor:#x}, {off:#x}) — "
+                "énumération incomplète ? Golden NON reconstruit.")
+        if off + size > total:
+            raise ValueError(
+                f"{p['dev']} déborde de la puce ({off + size:#x} > {total:#x})")
+        cursor = off + size
+    if cursor != total:
+        raise ValueError(
+            f"les partitions couvrent {cursor:#x}, pas {total:#x} (16 MiO "
+            "attendus) — mauvaise puce ou énumération incomplète.")
+    return ordered
+
+
+def flashcp_cmd(src, mtd_dev):
+    """argv `flashcp` (mtd-utils) pour écrire+vérifier un fichier dans une
+    partition MTD — flash on-device par-partition. `-v` vérifie après écriture.
+    """
+    return ["flashcp", "-v", src, mtd_dev]
 
 
 def fw_setenv_commands(env=None):

@@ -74,8 +74,9 @@ sudo odroid-station clone --image master.img --dest /dev/nvme0n1
 sudo odroid-station image --source /dev/sda --out master.img    # image COMPACTE
 sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
 sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
-sudo odroid-station spi read                                    # puce SPI -> golden
-sudo odroid-station spi flash --programmer internal             # golden -> puce locale
+sudo odroid-station spi read                                    # puce SPI -> golden (pince)
+sudo odroid-station spi read --programmer mtd                   # puce EMBARQUÉE, à chaud
+sudo odroid-station spi flash --programmer mtd                  # golden -> puce locale, à chaud
 sudo odroid-station spi verify | env-apply | env-save
 sudo odroid-station check                                       # GO/NO-GO sur l'unité
 ```
@@ -92,9 +93,13 @@ Points notables :
   la station tourne. Arrêter les services qui écrivent avant ; préférer le
   clone à froid pour un master de flotte. Le disque système reste **refusé en
   destination**, toujours.
-- **SPI de la machine locale** : programmer `internal` (GUI : « Cette
-  machine ») pour lire/sauvegarder/reflasher la puce SPI de l'Odroid où le
-  script tourne ; `ch341a_spi` (défaut) pour la pince, carte hors tension.
+- **SPI de la machine locale (à chaud)** : méthode `mtd` (GUI : « Cette
+  machine — puce SPI embarquée ») pour lire/vérifier/reflasher la puce SPI de
+  l'Odroid où le script tourne, **sans démontage ni pince**. Elle réassemble
+  les partitions MTD (`/proc/mtd` + `/dev/mtdN`) au lieu de passer par
+  `flashrom -p internal`, qui **n'existe pas** dans le flashrom ARM64 d'apt (et
+  `linux_mtd:dev=N` ne lit qu'UNE partition). La pince `ch341a_spi` (défaut)
+  reste la méthode master, carte hors tension.
 - `--sim` (ou case « Mode simulation ») : journalise les commandes exactes sans
   rien exécuter.
 
@@ -141,7 +146,7 @@ clone, backup pré-flash de la puce).
 
 1. **Onglet SPI** : sur le master, à la pince CH341A → « Lire la puce → golden »
    → committer `images/spi/golden_spi_16MiB.bin`.
-2. **Onglet SPI** : sur chaque unité (pince ou `internal`) → « Flasher cette unité ».
+2. **Onglet SPI** : sur chaque unité (pince, ou « Cette machine » à chaud) → « Flasher cette unité ».
 3. **Onglet Clone / Image** : cloner vers le NVMe cible (mode « SPI »), ou créer
    une image compacte comme source réutilisable. En SSH :
    `sudo odroid-station clone --source /dev/sdX --dest /dev/nvme0n1`.

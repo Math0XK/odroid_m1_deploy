@@ -25,10 +25,14 @@ Sur le **master** (celui qui boote déjà correctement), à la **pince CH341A** 
 hors tension) :
 
 ```bash
-sudo odroid-station            # onglet SPI, Programmer = « Pince CH341A »
+sudo odroid-station            # onglet SPI, méthode = « Pince CH341A »
                                # → bouton « Lire la puce → golden »
 sudo odroid-station spi read   # équivalent en SSH sans X11
 ```
+
+À défaut de pince, la puce **embarquée** de l'Odroid qui tourne se lit **à
+chaud** (méthode « Cette machine », ou `sudo odroid-station spi read
+--programmer mtd`) : réassemblage des partitions MTD, même golden + `.sha256`.
 
 L'outil valide le dump (16 MiO, non vierge, bannière « U-Boot ») avant de l'écrire
 ici, puis calcule le `.sha256`. **Ne commiter que si la validation passe.** Vérifie
@@ -38,11 +42,11 @@ flasher la flotte.
 ## Flasher une unité
 
 ```bash
-sudo odroid-station            # onglet SPI : choisir le Programmer (pince CH341A
-                               # hors tension, ou « Cette machine — internal »)
+sudo odroid-station            # onglet SPI : choisir la méthode (pince CH341A
+                               # hors tension, ou « Cette machine » à chaud)
                                # → « Flasher cette unité avec le golden »
-sudo odroid-station spi flash --programmer internal   # équivalent SSH (backup
-                               # pré-flash automatique)
+sudo odroid-station spi flash --programmer mtd   # équivalent SSH, à chaud
+                               # (backup pré-flash automatique)
 ```
 
 Puis vérifier **sur l'unité** : `sudo odroid-station check`.

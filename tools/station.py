@@ -28,12 +28,14 @@ les mêmes garde-fous — pas de duplication GUI/CLI :
     sudo odroid-station spi verify               # puce vs golden
     sudo odroid-station spi flash [--yes]        # golden -> puce (backup avant)
     sudo odroid-station spi env-apply            # 4 vars U-Boot critiques
+    sudo odroid-station spi read --programmer mtd  # puce embarquée, à chaud
     sudo odroid-station spi env-save             # dump fw_printenv
     sudo odroid-station check [--npu-cmd "…"]    # GO/NO-GO post-déploiement
 
-`spi --programmer` : `ch341a_spi` (pince, défaut), ou `internal` /
-`linux_mtd:dev=0` pour lire/flasher la puce SPI de la machine où le script
-tourne. `--sim` journalise les commandes sans rien exécuter.
+`spi --programmer` : `ch341a_spi` (pince, défaut), ou `mtd` pour lire/vérifier/
+flasher À CHAUD la puce SPI de la machine où le script tourne (réassemblage des
+partitions MTD — `internal` n'existe pas sur le flashrom ARM64). `--sim`
+journalise les commandes sans rien exécuter.
 
 La confirmation interactive de `clone` exige de RETAPER le nom du disque de
 destination (ex. « sdb ») : sur un poste de flotte on efface des disques à la
@@ -47,7 +49,7 @@ import sys
 
 from clone_core import list_block_devices
 from clone_engine import CloneEngine, assert_not_system_disk
-from spi_ops import SpiOps
+from spi_ops import SpiOps, human_programmer
 import check_deploy
 
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -281,8 +283,8 @@ def cmd_spi(args, p):
             if not os.path.isfile(golden):
                 p.error(f"golden absent : {golden}")
             if not args.yes and not confirm_yes(
-                    f"⚠ Ceci EFFACE la puce SPI via « {args.programmer} » et y "
-                    f"écrit {golden}.\n(Une sauvegarde de la puce est faite "
+                    f"⚠ Ceci EFFACE la puce SPI via « {human_programmer(args.programmer)} »"
+                    f" et y écrit {golden}.\n(Une sauvegarde de la puce est faite "
                     "avant.) Continuer ?"):
                 print("Annulé (confirmation refusée).")
                 return 1
@@ -378,8 +380,9 @@ def build_parser():
                    choices=["read", "verify", "flash", "env-apply", "env-save"],
                    help="opération SPI")
     s.add_argument("--programmer", default="ch341a_spi",
-                   help="programmer flashrom : ch341a_spi (pince, défaut), "
-                        "internal ou linux_mtd:dev=0 (puce SPI de CETTE machine)")
+                   help="ch341a_spi (pince, défaut) ; mtd = puce SPI de CETTE "
+                        "machine à chaud (réassemblage MTD) ; ou tout programmer "
+                        "flashrom brut (avancé)")
     s.add_argument("--file", metavar="FICHIER", default=DEFAULT_GOLDEN,
                    help=f"image SPI 16 MiO (défaut : {DEFAULT_GOLDEN})")
     s.add_argument("--sim", action="store_true",

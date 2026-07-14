@@ -7,6 +7,8 @@ parsers de vérification post-déploiement. `spi_core` n'importe que la stdlib
 """
 import hashlib
 
+import pytest
+
 import spi_core as sc
 
 
@@ -93,6 +95,93 @@ def test_env_has_ethaddr():
     assert sc.env_has_ethaddr("bootcmd=run distro_bootcmd\nethaddr=00:1e:06:aa:bb:cc\n")
     assert sc.env_has_ethaddr("  ETHADDR = 00:1e:06:11:22:33")   # casse/espaces
     assert not sc.env_has_ethaddr("bootcmd=run distro_bootcmd\nboot_targets=nvme\n")
+
+
+# --------------------------------------------------------------------------
+# On-device : réassemblage MTD (lecture/flash de la puce à chaud)
+# --------------------------------------------------------------------------
+# Table MTD de l'Odroid-M1 : 5 partitions qui pavent exactement 16 MiO.
+_MTD_ODROID = """dev:    size   erasesize  name
+mtd0: 00080000 00001000 "SPL"
+mtd1: 00080000 00001000 "U-Boot Env"
+mtd2: 00400000 00001000 "U-Boot"
+mtd3: 00400000 00001000 "splash"
+mtd4: 00700000 00001000 "Filesystem"
+"""
+
+
+def test_parse_proc_mtd():
+    parts = sc.parse_proc_mtd(_MTD_ODROID)
+    assert [p["dev"] for p in parts] == ["mtd0", "mtd1", "mtd2", "mtd3", "mtd4"]
+    assert parts[0] == {"dev": "mtd0", "size": 0x80000,
+                        "erasesize": 0x1000, "name": "SPL"}
+    assert parts[2]["name"] == "U-Boot"
+    # La somme des tailles fait bien la puce entière.
+    assert sum(p["size"] for p in parts) == sc.SPI_SIZE
+
+
+def test_parse_proc_mtd_ignore_entete_et_vide():
+    assert sc.parse_proc_mtd("") == []
+    assert sc.parse_proc_mtd("dev:    size   erasesize  name\n") == []
+
+
+def _mtd_parts_with_offsets():
+    """Partitions Odroid-M1 avec offsets cumulés (comme /sys/class/mtd/*/offset)."""
+    parts = sc.parse_proc_mtd(_MTD_ODROID)
+    off = 0
+    for p in parts:
+        p["offset"] = off
+        off += p["size"]
+    return parts
+
+
+def test_plan_full_readback_ok():
+    parts = _mtd_parts_with_offsets()
+    ordered = sc.plan_full_readback(parts)
+    assert [p["dev"] for p in ordered] == ["mtd0", "mtd1", "mtd2", "mtd3", "mtd4"]
+
+
+def test_plan_full_readback_trie_par_offset():
+    parts = list(reversed(_mtd_parts_with_offsets()))     # ordre mélangé
+    ordered = sc.plan_full_readback(parts)
+    assert [p["offset"] for p in ordered] == sorted(p["offset"] for p in parts)
+
+
+def test_plan_full_readback_refuse_trou():
+    parts = _mtd_parts_with_offsets()
+    parts[2]["offset"] += 0x1000                          # crée un trou avant mtd2
+    with pytest.raises(ValueError, match="trou"):
+        sc.plan_full_readback(parts)
+
+
+def test_plan_full_readback_refuse_chevauchement():
+    parts = _mtd_parts_with_offsets()
+    parts[1]["size"] += 0x1000                            # mtd1 mord sur mtd2
+    with pytest.raises(ValueError, match="chevauche"):
+        sc.plan_full_readback(parts)
+
+
+def test_plan_full_readback_refuse_couverture_incomplete():
+    parts = _mtd_parts_with_offsets()[:-1]                # sans la dernière
+    with pytest.raises(ValueError, match="couvrent"):
+        sc.plan_full_readback(parts)
+
+
+def test_plan_full_readback_refuse_debordement():
+    parts = _mtd_parts_with_offsets()
+    parts[-1]["size"] += 0x1000                           # déborde des 16 MiO
+    with pytest.raises(ValueError, match="déborde"):
+        sc.plan_full_readback(parts)
+
+
+def test_plan_full_readback_refuse_vide():
+    with pytest.raises(ValueError, match="aucune partition"):
+        sc.plan_full_readback([])
+
+
+def test_flashcp_cmd():
+    assert sc.flashcp_cmd("part.bin", "/dev/mtd0") == \
+        ["flashcp", "-v", "part.bin", "/dev/mtd0"]
 
 
 # --------------------------------------------------------------------------

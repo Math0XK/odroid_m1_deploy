@@ -89,11 +89,17 @@ la puce SPI :
 sudo odroid-station            # onglet "SPI (Golden / Flash / Env)"
 # ou en SSH : sudo odroid-station spi read
 ```
-Programmer = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
+Méthode = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
 1. lit les 16 MiO (`flashrom -p ch341a_spi -r …`) ;
 2. valide (taille exacte, image non vierge, bannière `U-Boot`) — refuse sinon ;
 3. écrit `images/spi/golden_spi_16MiB.bin` + `.sha256` ;
 4. avertit si l'env contient une `ethaddr` figée (voir §4).
+
+> **Lire la puce EMBARQUÉE à chaud** (sans pince, sur l'Odroid qui tourne) :
+> méthode **« Cette machine »**, ou `sudo odroid-station spi read --programmer
+> mtd`. Elle reconstruit les 16 MiO en réassemblant les partitions MTD
+> (`/proc/mtd` + `/dev/mtdN`) — `flashrom -p internal` n'existe pas sur le
+> flashrom ARM64. Mêmes validation, golden et manifeste SHA256 que la pince.
 
 Puis **committer** le golden (source de vérité versionnée) :
 ```bash
@@ -135,18 +141,21 @@ valeur), **ou** flasher par-partition (mtd0/mtd2 seuls) + `fw_setenv` par unité
 
 ## 5. Étape 3 — Flasher la SPI d'une unité
 
-`sudo odroid-station` (onglet SPI) → choisir le **Programmer**, puis **« Flasher
-cette unité avec le golden »** — ou en SSH :
-`sudo odroid-station spi flash [--programmer internal]`. L'outil sauvegarde
+`sudo odroid-station` (onglet SPI) → choisir la **méthode d'accès**, puis
+**« Flasher cette unité avec le golden »** — ou en SSH :
+`sudo odroid-station spi flash [--programmer mtd]`. L'outil sauvegarde
 d'abord la puce cible (`preflash_backups/`), contrôle le golden (taille +
 signature + SHA256 == manifeste), demande confirmation, écrit et vérifie.
 
 - **Pince CH341A** (recommandé, robuste) : unité **hors tension**, marche même sur une
   carte vierge/briquée.
-- **On-device `internal`** (SSH, unité qui boote déjà) : pratique, mais le flash
-  pleine-puce dépend du support flashrom du contrôleur SPI RK3568. Si `flashrom -p
-  internal` ne détecte pas la puce, repli sur la **pince** ou sur le flash
-  **par-partition** (§6).
+- **On-device « Cette machine » (`--programmer mtd`)** (SSH, unité qui boote déjà) :
+  lit/vérifie/reflashe la puce embarquée **à chaud**, sans démontage. Elle
+  **réassemble les partitions MTD** (`/proc/mtd` + `/dev/mtdN`) et flashe par
+  `flashcp` partition par partition — car `flashrom -p internal` **n'existe pas**
+  dans le flashrom ARM64 d'apt (et `linux_mtd:dev=N` ne voit qu'UNE partition).
+  Ne coupe jamais l'alimentation pendant un flash on-device (risque de brique) :
+  la sauvegarde pré-flash et la vérification restent le filet.
 
 > **Case « Mode simulation »** : journalise les commandes `flashrom` exactes sans
 > rien exécuter — à utiliser pour relire un enchaînement avant de le lancer pour de
