@@ -7,10 +7,8 @@ l'outil lui-même — l'image est **taillée sur l'espace UTILISÉ** de la racin
 **sparse** :
 
 ```bash
-# depuis le poste, disque master branché en USB (clone à froid) :
+# depuis le poste, disque master ÉTEINT branché en USB (clone à froid) :
 sudo odroid-station image --source /dev/sdX --out images/nvme/odroid_m1_nvme.img
-# ou depuis l'Odroid master lui-même, EN MARCHE (services arrêtés) :
-sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/odroid_m1_nvme.img --live
 ```
 
 Usage principal (voir [`../../docs/DEPLOIEMENT_FLOTTE.md`](../../docs/DEPLOIEMENT_FLOTTE.md)) :

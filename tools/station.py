@@ -19,23 +19,16 @@ les mêmes garde-fous — pas de duplication GUI/CLI :
     sudo odroid-station image --source /dev/sda --out master.img
                                                  # image COMPACTE (taillée sur
                                                  # l'espace UTILISÉ, sparse)
-    sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
-    sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
-                                                 # --live : la source peut être
-                                                 # le disque système de CETTE
-                                                 # machine (auto-clonage à chaud)
     sudo odroid-station spi read                 # puce -> golden (+ SHA256)
     sudo odroid-station spi verify               # puce vs golden
     sudo odroid-station spi flash [--yes]        # golden -> puce (backup avant)
     sudo odroid-station spi env-apply            # 4 vars U-Boot critiques
-    sudo odroid-station spi read --programmer mtd  # puce embarquée, à chaud
     sudo odroid-station spi env-save             # dump fw_printenv
     sudo odroid-station check [--npu-cmd "…"]    # GO/NO-GO post-déploiement
 
-`spi --programmer` : `ch341a_spi` (pince, défaut), ou `mtd` pour lire/vérifier/
-flasher À CHAUD la puce SPI de la machine où le script tourne (réassemblage des
-partitions MTD — `internal` n'existe pas sur le flashrom ARM64). `--sim`
-journalise les commandes sans rien exécuter.
+`spi --programmer` : `ch341a_spi` (pince CH341A, carte hors tension) — seule
+méthode ; le flash/lecture on-device (« à chaud ») n'est pas supporté sur cette
+carte. `--sim` journalise les commandes sans rien exécuter.
 
 La confirmation interactive de `clone` exige de RETAPER le nom du disque de
 destination (ex. « sdb ») : sur un poste de flotte on efface des disques à la
@@ -49,7 +42,7 @@ import sys
 
 from clone_core import list_block_devices
 from clone_engine import CloneEngine, assert_not_system_disk
-from spi_ops import SpiOps, human_programmer
+from spi_ops import SpiOps
 import check_deploy
 
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -191,14 +184,13 @@ def confirm_yes(prompt):
 
 
 def _check_source(args, p):
-    """Garde-fou source commun clone/image : jamais le disque système, SAUF
-    en --live explicite (auto-clonage de cette machine)."""
-    if args.source and not args.live:
+    """Garde-fou source commun clone/image : jamais le disque système (clone à
+    froid uniquement)."""
+    if args.source:
         try:
             assert_not_system_disk(args.source, role="source")
         except RuntimeError as e:
-            p.exit(1, f"ERREUR : {e}\n\nPour cloner CETTE machine en marche, "
-                      "ajoute --live (auto-clonage à chaud).\n")
+            p.exit(1, f"ERREUR : {e}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +221,7 @@ def cmd_clone(args, p):
         return 1
 
     engine = CloneEngine(log=print, progress=ProgressPrinter(),
-                         boot_mode=args.boot_mode, boot_medium=args.boot_medium,
-                         live=bool(args.live and args.source))
+                         boot_mode=args.boot_mode, boot_medium=args.boot_medium)
     try:
         msg = engine.clone(args.source, args.dest, img_path=args.image)
     except Exception as e:
@@ -248,7 +239,7 @@ def cmd_image(args, p):
             return 1
 
     engine = CloneEngine(log=print, progress=ProgressPrinter(),
-                         boot_mode=args.boot_mode, live=args.live)
+                         boot_mode=args.boot_mode)
     try:
         msg = engine.make_image(args.source, args.out)
     except Exception as e:
@@ -283,8 +274,8 @@ def cmd_spi(args, p):
             if not os.path.isfile(golden):
                 p.error(f"golden absent : {golden}")
             if not args.yes and not confirm_yes(
-                    f"⚠ Ceci EFFACE la puce SPI via « {human_programmer(args.programmer)} »"
-                    f" et y écrit {golden}.\n(Une sauvegarde de la puce est faite "
+                    f"⚠ Ceci EFFACE la puce SPI via « {args.programmer} » et y "
+                    f"écrit {golden}.\n(Une sauvegarde de la puce est faite "
                     "avant.) Continuer ?"):
                 print("Annulé (confirmation refusée).")
                 return 1
@@ -339,7 +330,7 @@ def build_parser():
     csrc = c.add_mutually_exclusive_group(required=False)
     csrc.add_argument("--source", metavar="DEV",
                       help="disque source (à froid : l'Odroid source éteint, "
-                           "branché en lecteur USB — ou cette machine avec --live)")
+                           "branché en lecteur USB)")
     csrc.add_argument("--image", metavar="FICHIER",
                       help="fichier image source (.img), monté en loop device")
     c.add_argument("--dest", metavar="DEV", required=True,
@@ -351,10 +342,6 @@ def build_parser():
     c.add_argument("--boot-medium", metavar="DEV", default=None,
                    help="(legacy, SSD USB-SATA uniquement) support de boot "
                         "séparé USB/SD, sera EFFACÉ. Inutile pour un NVMe.")
-    c.add_argument("--live", action="store_true",
-                   help="autorise le disque SYSTÈME de cette machine en source "
-                        "(auto-clonage à CHAUD — arrêter les services qui "
-                        "écrivent ; préférer le clone à froid pour un master)")
     c.add_argument("--yes", action="store_true",
                    help="saute la confirmation interactive (usage scripté)")
 
@@ -368,9 +355,6 @@ def build_parser():
     i.add_argument("--boot-mode", choices=["spi", "disk"], default="spi",
                    help="mode de boot embarqué dans l'image (défaut : spi ; "
                         "'disk' recopie la zone idbloader/u-boot dans l'image)")
-    i.add_argument("--live", action="store_true",
-                   help="autorise le disque SYSTÈME de cette machine en source "
-                        "(auto-imagerie à CHAUD)")
     i.add_argument("--yes", action="store_true",
                    help="remplace un fichier existant sans confirmation")
 
@@ -380,9 +364,8 @@ def build_parser():
                    choices=["read", "verify", "flash", "env-apply", "env-save"],
                    help="opération SPI")
     s.add_argument("--programmer", default="ch341a_spi",
-                   help="ch341a_spi (pince, défaut) ; mtd = puce SPI de CETTE "
-                        "machine à chaud (réassemblage MTD) ; ou tout programmer "
-                        "flashrom brut (avancé)")
+                   help="programmer flashrom (défaut ch341a_spi : pince CH341A, "
+                        "carte hors tension — seule méthode supportée)")
     s.add_argument("--file", metavar="FICHIER", default=DEFAULT_GOLDEN,
                    help=f"image SPI 16 MiO (défaut : {DEFAULT_GOLDEN})")
     s.add_argument("--sim", action="store_true",

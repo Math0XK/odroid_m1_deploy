@@ -101,14 +101,8 @@ class CloneEngine:
     « spi » (défaut, flotte) ou « disk » (legacy eMMC/SD auto-bootable) ;
     `boot_medium` est le disque du support de boot séparé legacy, ou None.
 
-    `live=True` autorise le disque SYSTÈME en source : auto-clonage (ou
-    auto-imagerie) de l'Odroid sur lequel le script tourne. La source n'est
-    alors PAS remontée read-only (impossible sur « / ») : on lit les montages
-    vivants tels quels, et rsync tolère les fichiers qui disparaissent en cours
-    de copie (code 24). Un instantané à chaud n'est jamais parfaitement
-    cohérent : arrêter ce qui écrit (services applicatifs) avant de lancer, et
-    préférer le clone à froid pour un master de flotte. Le garde-fou
-    `assert_not_system_disk` reste ABSOLU pour la destination.
+    Le clonage est TOUJOURS à froid : le disque système en marche est refusé en
+    source comme en destination (`assert_not_system_disk`, garde-fou absolu).
 
     Deux points d'entrée : `clone()` (disque ou image -> disque) et
     `make_image()` (disque -> fichier image COMPACT, futur `--image` de clone()).
@@ -116,33 +110,21 @@ class CloneEngine:
     même en cas d'erreur, LÈVE en cas d'échec, et retourne le message de fin.
     """
 
-    def __init__(self, log, progress=None, boot_mode="spi", boot_medium=None,
-                 live=False):
+    def __init__(self, log, progress=None, boot_mode="spi", boot_medium=None):
         if boot_mode not in ("spi", "disk"):
             raise ValueError(f"boot_mode inconnu : {boot_mode!r} (attendu 'spi' ou 'disk')")
         self.log = log
         self._progress = progress if progress is not None else (lambda pct, text: None)
         self.boot_mode = boot_mode
         self.boot_medium = boot_medium
-        self.live = live
         self.loop_dev = None
         self._cleanup_mounts = []     # points de montage créés PAR NOUS (cleanup)
         self._poll_stop = None
         self._id_subs = {}
-        self._extra_root_excludes = []   # ex. l'image en cours d'écriture (live)
 
     # ---------- Point d'entrée ----------
-    def _warn_if_live(self):
-        if self.live:
-            self.log("⚠ MODE LIVE : la source est le système EN MARCHE. "
-                     "L'instantané n'est pas parfaitement cohérent — arrête ce "
-                     "qui écrit (services applicatifs, bases de données) avant "
-                     "de lancer. Pour un master de flotte, préfère le clone à "
-                     "froid.")
-
     def clone(self, src_disk, dst_disk, img_path=None):
         try:
-            self._warn_if_live()
             if img_path:
                 self.log(f"Attachement de l'image {img_path} en loop device...")
                 loop = run(["losetup", "--find", "--show", "-P", img_path]).strip()
@@ -200,13 +182,6 @@ class CloneEngine:
         """
         created = False
         try:
-            self._warn_if_live()
-            # En live, l'image peut être écrite SUR le disque qu'on est en train
-            # d'imager : il faut l'exclure de la copie, sinon rsync copierait
-            # dans l'image le fichier image lui-même (en cours d'écriture via le
-            # loop device -> des gigaoctets d'auto-référence).
-            if self.live:
-                self._extra_root_excludes.append(os.path.realpath(img_path))
             p2_start, root_used = self._measure_for_image(src_disk)
             size = image_size_bytes(p2_start, root_used, margin=margin)
             self.log(f"Racine source : {root_used / 1e9:.1f} Go utilisés -> "
@@ -272,8 +247,7 @@ class CloneEngine:
         try:
             return p2_start, fs_used(mp)
         finally:
-            # ne démonte que ce que NOUS avons monté (jamais un montage vivant
-            # utilisé en mode live, comme « / »)
+            # ne démonte que ce que NOUS avons monté
             if mp in self._cleanup_mounts:
                 subprocess.run(["umount", mp], capture_output=True)
                 self._cleanup_mounts.remove(mp)
@@ -293,10 +267,9 @@ class CloneEngine:
             # remappe les propriétaires par NOM et le clone ne boote plus).
             attempts = [["-aHAX", "--numeric-ids"], ["-aH", "--numeric-ids"]]
 
-        # En live (source = système en marche), des fichiers peuvent disparaître
-        # entre le listage et la copie : rsync sort alors en 24 — toléré. Toute
-        # autre erreur reste fatale.
-        ok_codes = (0, 24) if self.live else (0,)
+        # Source = montage read-only figé (clone à froid) : aucune tolérance aux
+        # transferts partiels, on exige le code 0.
+        ok_codes = (0,)
         last = None
         for flags in attempts:
             r = subprocess.run(["rsync", *flags, *excludes, src, dst],
@@ -353,28 +326,12 @@ class CloneEngine:
         self._cleanup_mounts.append(mountpoint)
 
     def _source_access(self, part, fallback_mp):
-        """Chemin de lecture d'une partition source.
+        """Chemin de lecture d'une partition source (clone à froid).
 
-        Cas normal (clone à froid) : la source n'est jamais le système en marche
-        (garde-fou en amont), on démonte son éventuel auto-montage (udisks2, en
-        lecture-écriture) et on la remonte read-only pour lire un instantané
-        cohérent et figé.
-
-        Cas `live` (auto-clonage du système en marche) : impossible de remonter
-        « / » en read-only — si la partition est déjà montée on lit son montage
-        vivant TEL QUEL (le plus court des points de montage : « / » avant un
-        éventuel bind), sans jamais y toucher ; si elle ne l'est pas (partition
-        BOOT souvent non montée), montage read-only classique.
+        La source n'est jamais le système en marche (garde-fou en amont) : on
+        démonte son éventuel auto-montage (udisks2, en lecture-écriture) et on la
+        remonte read-only pour lire un instantané cohérent et figé.
         """
-        if self.live:
-            mps = sorted(all_mountpoints(part), key=len)
-            if mps:
-                self.log(f"Live : lecture de {part} via son montage vivant "
-                         f"{mps[0]} (non remonté read-only).")
-                return mps[0]
-            self._mount(part, fallback_mp, ro=True,
-                        fstype=blkid_value(part, "TYPE") or None)
-            return fallback_mp
         self._force_unmount(part)
         self._mount(part, fallback_mp, ro=True,
                     fstype=blkid_value(part, "TYPE") or None)
@@ -852,7 +809,7 @@ class CloneEngine:
             f"{src_root}/", "/mnt/clone_dst_root/",
             extra_excludes=["/proc/*", "/sys/*", "/dev/*", "/tmp/*", "/run/*",
                             "/mnt/*", "/media/*", "/lost+found", "/var/tmp/*",
-                            "/var/swap", *self._extra_root_excludes],
+                            "/var/swap"],
         )
 
         # Recrée les points de montage exclus, avec les BONS droits (un /tmp

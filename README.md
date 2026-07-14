@@ -1,10 +1,10 @@
 # odroid_m1_deploy — poste de déploiement de flotte Odroid-M1
 
 **Un seul outil** (`odroid-station`) pour dupliquer une carte Odroid-M1 de
-production (RK3568) : sauvegarde/flash du bootloader **SPI**, clonage du
-**NVMe**, création d'**images disque compactes** (source de clonage),
-auto-clonage de la machine en marche, et vérification post-déploiement — en
-graphique **et** en ligne de commande (SSH). Conçu comme un **poste dédié** :
+production (RK3568) : sauvegarde/flash du bootloader **SPI** (à la pince
+CH341A), clonage du **NVMe** à froid, création d'**images disque compactes**
+(source de clonage), et vérification post-déploiement — en graphique **et** en
+ligne de commande (SSH). Conçu comme un **poste dédié** :
 sur une image Ubuntu/Armbian fraîche et minimale (sans bureau graphique), **une
 seule ligne de commande** installe tout — le tableau de bord se lance ensuite
 automatiquement, plein écran, à chaque démarrage (service systemd, boot
@@ -72,11 +72,8 @@ sudo odroid-station list                                        # disques détec
 sudo odroid-station clone --source /dev/sda --dest /dev/nvme0n1 # clonage à froid
 sudo odroid-station clone --image master.img --dest /dev/nvme0n1
 sudo odroid-station image --source /dev/sda --out master.img    # image COMPACTE
-sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
-sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
 sudo odroid-station spi read                                    # puce SPI -> golden (pince)
-sudo odroid-station spi read --programmer mtd                   # puce EMBARQUÉE, à chaud
-sudo odroid-station spi flash --programmer mtd                  # golden -> puce locale, à chaud
+sudo odroid-station spi flash                                   # golden -> puce (pince)
 sudo odroid-station spi verify | env-apply | env-save
 sudo odroid-station check                                       # GO/NO-GO sur l'unité
 ```
@@ -88,18 +85,14 @@ Points notables :
   la racine, pas sur la capacité du disque — un NVMe 128 Go rempli à 20 % donne
   ~30 Go, en fichier **sparse**. Au clonage depuis l'image, la racine est
   ré-étendue à la taille de la cible.
-- **`--live`** (ou case « Auto-clonage à CHAUD ») : autorise le disque
-  **système** de la machine en source, pour cloner/imager l'Odroid sur lequel
-  la station tourne. Arrêter les services qui écrivent avant ; préférer le
-  clone à froid pour un master de flotte. Le disque système reste **refusé en
-  destination**, toujours.
-- **SPI de la machine locale (à chaud)** : méthode `mtd` (GUI : « Cette
-  machine — puce SPI embarquée ») pour lire/vérifier/reflasher la puce SPI de
-  l'Odroid où le script tourne, **sans démontage ni pince**. Elle réassemble
-  les partitions MTD (`/proc/mtd` + `/dev/mtdN`) au lieu de passer par
-  `flashrom -p internal`, qui **n'existe pas** dans le flashrom ARM64 d'apt (et
-  `linux_mtd:dev=N` ne lit qu'UNE partition). La pince `ch341a_spi` (défaut)
-  reste la méthode master, carte hors tension.
+- **Clone à FROID uniquement** : la source est un Odroid **éteint** dont la
+  carte/eMMC/NVMe est branchée en lecteur USB (ou un fichier image). Le disque
+  **système** de la machine en marche est **refusé** en source comme en
+  destination — pas d'auto-clonage à chaud.
+- **SPI à la PINCE CH341A** : lecture du golden sur le master et flash de la
+  flotte se font à la pince SOIC-8, **carte hors tension** (`ch341a_spi`). Le
+  flash/lecture on-device (« à chaud ») n'est pas supporté : le contrôleur SPI
+  du RK3568 n'expose pas la puce entière à Linux.
 - `--sim` (ou case « Mode simulation ») : journalise les commandes exactes sans
   rien exécuter.
 
@@ -121,7 +114,7 @@ odroid_m1_deploy/
                              GUI/CLI : garde-fous, backup pré-flash, SHA256
     spi_panel.py            onglet SPI (golden / flash flotte / env)
     clone_core.py           logique pure du clonage (testée)
-    clone_engine.py         MOTEUR clonage + image compacte + mode live (sans UI)
+    clone_engine.py         MOTEUR clonage à froid + image compacte (sans UI)
     clone_panel.py          onglet Clone / Image
     verify_panel.py         onglet Vérification
     check_deploy.py         contrôles GO/NO-GO (module partagé onglet/CLI)
@@ -139,14 +132,14 @@ odroid_m1_deploy/
 
 GUI et CLI pilotent **les mêmes moteurs** (`clone_engine.CloneEngine`,
 `spi_ops.SpiOps`) — pas de duplication, mêmes garde-fous partout (refus du
-disque système en destination, clone à froid par défaut, identité neuve du
-clone, backup pré-flash de la puce).
+disque système en source comme en destination, clone à froid uniquement,
+identité neuve du clone, backup pré-flash de la puce).
 
 ## Démarrage rapide (dans le tableau de bord)
 
 1. **Onglet SPI** : sur le master, à la pince CH341A → « Lire la puce → golden »
    → committer `images/spi/golden_spi_16MiB.bin`.
-2. **Onglet SPI** : sur chaque unité (pince, ou « Cette machine » à chaud) → « Flasher cette unité ».
+2. **Onglet SPI** : sur chaque unité, à la pince CH341A → « Flasher cette unité ».
 3. **Onglet Clone / Image** : cloner vers le NVMe cible (mode « SPI »), ou créer
    une image compacte comme source réutilisable. En SSH :
    `sudo odroid-station clone --source /dev/sdX --dest /dev/nvme0n1`.

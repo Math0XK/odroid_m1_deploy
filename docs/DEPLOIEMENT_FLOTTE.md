@@ -89,17 +89,11 @@ la puce SPI :
 sudo odroid-station            # onglet "SPI (Golden / Flash / Env)"
 # ou en SSH : sudo odroid-station spi read
 ```
-Méthode = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
+Programmer = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
 1. lit les 16 MiO (`flashrom -p ch341a_spi -r …`) ;
 2. valide (taille exacte, image non vierge, bannière `U-Boot`) — refuse sinon ;
 3. écrit `images/spi/golden_spi_16MiB.bin` + `.sha256` ;
 4. avertit si l'env contient une `ethaddr` figée (voir §4).
-
-> **Lire la puce EMBARQUÉE à chaud** (sans pince, sur l'Odroid qui tourne) :
-> méthode **« Cette machine »**, ou `sudo odroid-station spi read --programmer
-> mtd`. Elle reconstruit les 16 MiO en réassemblant les partitions MTD
-> (`/proc/mtd` + `/dev/mtdN`) — `flashrom -p internal` n'existe pas sur le
-> flashrom ARM64. Mêmes validation, golden et manifeste SHA256 que la pince.
 
 Puis **committer** le golden (source de vérité versionnée) :
 ```bash
@@ -141,21 +135,17 @@ valeur), **ou** flasher par-partition (mtd0/mtd2 seuls) + `fw_setenv` par unité
 
 ## 5. Étape 3 — Flasher la SPI d'une unité
 
-`sudo odroid-station` (onglet SPI) → choisir la **méthode d'accès**, puis
-**« Flasher cette unité avec le golden »** — ou en SSH :
-`sudo odroid-station spi flash [--programmer mtd]`. L'outil sauvegarde
-d'abord la puce cible (`preflash_backups/`), contrôle le golden (taille +
-signature + SHA256 == manifeste), demande confirmation, écrit et vérifie.
+`sudo odroid-station` (onglet SPI) → **« Flasher cette unité avec le golden »** —
+ou en SSH : `sudo odroid-station spi flash`. L'outil sauvegarde d'abord la puce
+cible (`preflash_backups/`), contrôle le golden (taille + signature + SHA256 ==
+manifeste), demande confirmation, écrit et vérifie.
 
-- **Pince CH341A** (recommandé, robuste) : unité **hors tension**, marche même sur une
-  carte vierge/briquée.
-- **On-device « Cette machine » (`--programmer mtd`)** (SSH, unité qui boote déjà) :
-  lit/vérifie/reflashe la puce embarquée **à chaud**, sans démontage. Elle
-  **réassemble les partitions MTD** (`/proc/mtd` + `/dev/mtdN`) et flashe par
-  `flashcp` partition par partition — car `flashrom -p internal` **n'existe pas**
-  dans le flashrom ARM64 d'apt (et `linux_mtd:dev=N` ne voit qu'UNE partition).
-  Ne coupe jamais l'alimentation pendant un flash on-device (risque de brique) :
-  la sauvegarde pré-flash et la vérification restent le filet.
+- **Pince CH341A** (seule méthode) : unité **hors tension**, pince SOIC-8 sur la
+  puce, marche même sur une carte vierge/briquée.
+- Le flash/lecture **on-device** (« à chaud », `internal`) n'est **pas supporté** :
+  le contrôleur SPI du RK3568 (SFC) n'expose pas la puce entière à Linux
+  (`flashrom -p internal` n'existe pas sur le flashrom ARM64 ; les partitions MTD
+  ne couvrent pas les 16 MiO). Toujours passer par la pince, carte hors tension.
 
 > **Case « Mode simulation »** : journalise les commandes `flashrom` exactes sans
 > rien exécuter — à utiliser pour relire un enchaînement avant de le lancer pour de
@@ -214,16 +204,12 @@ L'image est **taillée sur l'espace UTILISÉ** de la racine (pas la capacité du
 disque : un NVMe 128 Go rempli à 20 % → ~30 Go) et **sparse**. Au clonage depuis
 l'image, la racine est ré-étendue à la taille de la cible.
 
-**Auto-clonage / auto-imagerie à CHAUD.** Pour cloner (ou imager) le disque de
-l'Odroid **sur lequel la station tourne** : case « Auto-clonage à CHAUD » dans
-l'onglet, ou `--live` en SSH :
-```bash
-sudo odroid-station clone --source /dev/nvme0n1 --dest /dev/sda --live
-sudo odroid-station image --source /dev/nvme0n1 --out /media/usb/self.img --live
-```
-Un instantané à chaud n'est jamais parfaitement cohérent : **arrêter les services
-qui écrivent** avant de lancer, et préférer le clone à froid pour un master de
-flotte. Le disque système reste **refusé en destination**, quoi qu'il arrive.
+**Clone à FROID uniquement.** Le clonage et l'imagerie lisent toujours un disque
+source **éteint** (l'Odroid source hors tension, sa carte/eMMC/NVMe branchée en
+lecteur USB) ou un fichier image — jamais le disque système de la machine en
+marche. Le disque système est **refusé en source comme en destination**, quoi
+qu'il arrive : c'est le chemin fiable pour un master de flotte (instantané figé,
+remonté read-only).
 
 ---
 

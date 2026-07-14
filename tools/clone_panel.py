@@ -10,17 +10,13 @@ dans `clone_engine.CloneEngine`, partagé avec les sous-commandes CLI
 `station.py clone` / `station.py image` (SSH sans X11) : même code, mêmes
 garde-fous des deux côtés.
 
-SOURCE — trois façons :
+SOURCE — deux façons (À FROID uniquement : le disque système en marche est
+toujours refusé en source) :
   - disque physique à FROID (défaut) : l'Odroid source éteint, sa carte/eMMC/NVMe
     branché en lecteur USB. La source est remontée read-only : instantané figé,
     le chemin recommandé pour un master de flotte ;
   - fichier image (.img) : monté en loop device (typiquement une image compacte
-    produite ici même) ;
-  - cette machine EN MARCHE (case « auto-clonage à chaud ») : autorise le disque
-    système en source pour cloner/imager l'Odroid sur lequel la station tourne.
-    Impossible de remonter « / » read-only -> lecture des montages vivants,
-    rsync tolère les fichiers qui bougent (code 24). Un instantané à chaud n'est
-    jamais parfaitement cohérent : arrêter les services applicatifs avant.
+    produite ici même).
 
 DESTINATION — deux façons :
   - disque physique (sera EFFACÉ) : le clonage classique ;
@@ -95,15 +91,10 @@ class ClonePanel(ttk.Frame):
         self.src_image_btn = ttk.Button(src_frame, text="Parcourir...", command=self._browse_image)
         # placés/masqués dynamiquement par _toggle_src
 
-        # Auto-clonage à CHAUD : autorise le disque système (celui de la machine
-        # où la station tourne) en source. Sinon, clone à froid uniquement.
-        self.var_live = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            src_frame, variable=self.var_live,
-            text="Auto-clonage à CHAUD : autoriser le disque SYSTÈME de cette "
-                 "machine en source (arrêter les services qui écrivent ; "
-                 "préférer le clone à froid pour un master)",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(src_frame, foreground="#666",
+                  text="Clone à FROID uniquement : le disque système en marche est "
+                       "refusé en source (éteins l'Odroid, branche sa carte en USB).").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
 
         # --- Destination ---
         dst_frame = ttk.LabelFrame(self, text="Destination")
@@ -298,17 +289,15 @@ class ClonePanel(ttk.Frame):
             return None
         return None, img_path   # src résolu après losetup
 
-    def _check_source_disk(self, src_disk, live):
-        """Garde-fou disque système : sauté UNIQUEMENT en auto-clonage à chaud
-        explicite (case cochée). Retourne False si refusé (erreur affichée)."""
-        if src_disk is None or live:
+    def _check_source_disk(self, src_disk):
+        """Garde-fou disque système en source (clone à froid uniquement).
+        Retourne False si refusé (erreur affichée)."""
+        if src_disk is None:
             return True
         try:
             assert_not_system_disk(src_disk, role="source")
         except RuntimeError as e:
-            messagebox.showerror(
-                "Erreur", f"{e}\n\nPour cloner CETTE machine en marche, coche "
-                "« Auto-clonage à CHAUD » (source).")
+            messagebox.showerror("Erreur", str(e))
             return False
         return True
 
@@ -328,7 +317,6 @@ class ClonePanel(ttk.Frame):
         if sel is None:
             return
         src_disk, img_path = sel
-        live = self.var_live.get() and src_disk is not None
 
         if src_disk is not None and src_disk == dst_disk:
             messagebox.showerror("Erreur", "Source et destination identiques.")
@@ -348,10 +336,9 @@ class ClonePanel(ttk.Frame):
                     "la source et de la cible.")
                 return
 
-        # GARDE-FOUS : le disque système n'est jamais ÉCRASÉ (destination /
-        # support de boot, absolu) ; en source il n'est accepté qu'en
-        # auto-clonage à chaud explicite.
-        if not self._check_source_disk(src_disk, live):
+        # GARDE-FOUS : le disque système n'est jamais la source (clone à froid)
+        # ni ÉCRASÉ (destination / support de boot), garde-fou absolu.
+        if not self._check_source_disk(src_disk):
             return
         try:
             assert_not_system_disk(dst_disk, role="destination")
@@ -364,9 +351,6 @@ class ClonePanel(ttk.Frame):
         efface = f"EFFACER TOUT LE CONTENU de {dst_disk}"
         if boot_medium:
             efface += f"\nET de {boot_medium} (support de boot)"
-        if live:
-            efface += ("\n\nSource = SYSTÈME EN MARCHE (clone à chaud) : "
-                       "arrête d'abord les services qui écrivent.")
         if not messagebox.askyesno("Confirmation", f"Ceci va {efface}.\n\nContinuer ?"):
             return
 
@@ -375,7 +359,7 @@ class ClonePanel(ttk.Frame):
         self._boot_mode_val = self.boot_mode.get()
         self.clone_btn.config(state="disabled")
         threading.Thread(target=self._clone_worker,
-                         args=(src_disk, dst_disk, img_path, live),
+                         args=(src_disk, dst_disk, img_path),
                          daemon=True).start()
 
     def _on_make_image(self):
@@ -396,31 +380,27 @@ class ClonePanel(ttk.Frame):
         if not os.path.isdir(parent):
             messagebox.showerror("Erreur", f"Dossier inexistant : {parent}")
             return
-        live = self.var_live.get()
 
-        if not self._check_source_disk(src_disk, live):
+        if not self._check_source_disk(src_disk):
             return
 
         msg = (f"Créer une image COMPACTE de {src_disk} dans :\n{out_path}\n\n"
                "(taillée sur l'espace utilisé, fichier sparse)")
         if os.path.exists(out_path):
             msg += "\n\n⚠ Le fichier existe déjà et sera REMPLACÉ."
-        if live:
-            msg += ("\n\nSource = SYSTÈME EN MARCHE (imagerie à chaud) : "
-                    "arrête d'abord les services qui écrivent.")
         if not messagebox.askyesno("Confirmation", msg + "\n\nContinuer ?"):
             return
 
         self._boot_mode_val = self.boot_mode.get()
         self.clone_btn.config(state="disabled")
-        threading.Thread(target=self._image_worker, args=(src_disk, out_path, live),
+        threading.Thread(target=self._image_worker, args=(src_disk, out_path),
                          daemon=True).start()
 
     # ---------- Workers ----------
-    def _clone_worker(self, src_disk, dst_disk, img_path, live):
+    def _clone_worker(self, src_disk, dst_disk, img_path):
         engine = CloneEngine(log=self.log_write, progress=self._set_progress,
                              boot_mode=self._boot_mode_val,
-                             boot_medium=self._boot_medium, live=live)
+                             boot_medium=self._boot_medium)
         try:
             msg = engine.clone(src_disk, dst_disk, img_path=img_path)
             self._ui_queue.put(("done", msg))
@@ -428,9 +408,9 @@ class ClonePanel(ttk.Frame):
             self.log_write(f"\n=== ERREUR ===\n{e}")
             self._ui_queue.put(("error", str(e)))
 
-    def _image_worker(self, src_disk, out_path, live):
+    def _image_worker(self, src_disk, out_path):
         engine = CloneEngine(log=self.log_write, progress=self._set_progress,
-                             boot_mode=self._boot_mode_val, live=live)
+                             boot_mode=self._boot_mode_val)
         try:
             msg = engine.make_image(src_disk, out_path)
             self._ui_queue.put(("done", msg))

@@ -15,16 +15,13 @@ garde-fous) vivent dans `spi_ops.SpiOps`, partagé avec les sous-commandes CLI
 `station.py spi …` — même code, mêmes garde-fous des deux côtés. La logique pure
 (validation d'image, parsers) est dans `spi_core` (testée sans matériel).
 
-Deux méthodes d'accès à la puce, via les boutons radio en haut de l'onglet :
-  - « Pince CH341A » : à la PINCE (clip SOIC), carte hors tension — marche même
-    sur une unité vierge/briquée. C'est la méthode de lecture du master.
-  - « Cette machine » : la puce SPI embarquée de l'Odroid où tourne la station,
-    lue/vérifiée/reflashée à CHAUD par réassemblage des partitions MTD
-    (`/proc/mtd` + `/dev/mtdN`) — PAS via flashrom (`internal` n'existe pas sur
-    cette carte). Voir `spi_ops.SpiOps` pour le détail.
+Une seule méthode : à la PINCE CH341A (clip SOIC-8), carte HORS TENSION
+(`flashrom -p ch341a_spi`) — marche même sur une unité vierge/briquée. Le
+flash/lecture on-device (« à chaud ») a été retiré : le contrôleur SPI du RK3568
+n'expose pas la puce entière à Linux (voir docs/DEPLOIEMENT_FLOTTE.md).
 
 Case « Mode simulation » : n'exécute RIEN, journalise seulement les commandes
-exactes (revue de sécurité, sans matériel).
+flashrom/fw_setenv exactes (revue de sécurité, sans matériel).
 """
 
 import os
@@ -33,7 +30,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
-from spi_ops import MTD_PROGRAMMER, PROGRAMMERS, SpiOps, human_programmer
+from spi_ops import PROGRAMMERS, SpiOps
 
 
 class SpiPanel(ttk.Frame):
@@ -59,22 +56,16 @@ class SpiPanel(ttk.Frame):
         pad = {"padx": 8, "pady": 5}
         btn = {"padx": 6, "pady": 4}
 
-        # --- Méthode d'accès à la puce (partagée lecture/flash/vérif) ---
-        m_frame = ttk.LabelFrame(self, text="Méthode d'accès à la puce SPI")
-        m_frame.pack(fill="x", **pad)
-        self.method_var = tk.StringVar(value=next(iter(PROGRAMMERS.values())))
-        for label, val in PROGRAMMERS.items():
-            ttk.Radiobutton(m_frame, text=label, value=val,
-                            variable=self.method_var,
-                            command=self._on_method_change).pack(anchor="w", padx=8)
-        self.method_info = ttk.Label(m_frame, wraplength=820, justify="left",
-                                     foreground="#666")
-        self.method_info.pack(anchor="w", padx=26, pady=(2, 4))
+        # --- Programmer (unique : pince CH341A ; on-device « à chaud » retiré) ---
+        prog_frame = ttk.LabelFrame(self, text="Programmer (flashrom)")
+        prog_frame.pack(fill="x", **pad)
+        ttk.Label(prog_frame,
+                  text="Pince CH341A (clip SOIC-8) — carte HORS TENSION.").pack(
+            anchor="w", padx=8, pady=(6, 0))
         self.var_sim = tk.BooleanVar(value=False)
-        ttk.Checkbutton(m_frame, variable=self.var_sim,
+        ttk.Checkbutton(prog_frame, variable=self.var_sim,
                         text="Mode simulation (n'exécute rien, journalise les "
-                             "commandes)").pack(anchor="w", padx=8, pady=(0, 4))
-        self._on_method_change()
+                             "commandes)").pack(anchor="w", padx=8, pady=(2, 6))
 
         # --- 1) Golden ---
         g_frame = ttk.LabelFrame(self, text="1) Golden — lire / vérifier (16 MiO)")
@@ -198,21 +189,8 @@ class SpiPanel(ttk.Frame):
                       sim=self.var_sim.get())
 
     def _programmer(self):
-        return self.method_var.get()
-
-    def _on_method_change(self):
-        """Met à jour l'explication sous les boutons radio selon la méthode."""
-        if self.method_var.get() == MTD_PROGRAMMER:
-            self.method_info.config(text=(
-                "À CHAUD, sur l'Odroid où tourne la station : lit / vérifie / "
-                "reflashe sa PROPRE puce SPI en réassemblant ses partitions MTD "
-                "(/dev/mtd*). Aucun démontage ni pince. C'est la voie on-device "
-                "(flashrom -p internal n'existe pas sur cette carte)."))
-        else:
-            self.method_info.config(text=(
-                "À la pince SOIC-8 sur la puce, carte HORS TENSION (flashrom "
-                "ch341a_spi). Méthode de référence pour lire le master et "
-                "flasher une carte vierge ou briquée."))
+        # Programmer unique (pince CH341A) : plus de sélecteur.
+        return next(iter(PROGRAMMERS.values()))
 
     # ---------- Golden : lecture / vérif ----------
     def _on_read_master(self):
@@ -255,13 +233,11 @@ class SpiPanel(ttk.Frame):
             if not os.path.isfile(golden):
                 messagebox.showerror("Erreur", f"Golden absent : {golden}")
                 return
-            live = " (à CHAUD, la puce de CETTE machine)" \
-                if programmer == MTD_PROGRAMMER else ""
             if not messagebox.askyesno(
                     "Confirmation",
-                    f"Ceci EFFACE la SPI de l'unité via « {human_programmer(programmer)} »"
-                    f"{live} et y écrit le golden.\n\nUne sauvegarde de la puce "
-                    "est faite avant.\n\nContinuer ?"):
+                    f"Ceci EFFACE la SPI de l'unité via « {programmer} » et y écrit "
+                    f"le golden.\n\nUne sauvegarde de la puce est faite avant.\n\n"
+                    "Continuer ?"):
                 return
         self.log_write(f"\n--- Flash unité ({programmer}) ---")
         self._start(self._flash_unit_worker, self._ops(), programmer, golden)
