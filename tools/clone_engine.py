@@ -18,6 +18,7 @@ import glob
 import os
 import platform
 import re
+import shutil
 import stat
 import subprocess
 import threading
@@ -25,9 +26,9 @@ import time
 
 from clone_core import (
     BOOTLOADER_FIRST_SECTOR, blkid_value, bootloader_gap_present,
-    build_dst_script, disk_label_id, extract_root_ids, fs_used, gen_label_id,
-    image_size_bytes, is_system_mp, parse_start_size, part_name,
-    rewrite_uboot_script, run, storage_modules,
+    build_dst_script, disk_label_id, dos_partuuid, extract_root_ids, fs_used,
+    gen_label_id, image_size_bytes, is_system_mp, parse_start_size, part_name,
+    rewrite_uboot_script, run, sfdisk_label_id, storage_modules,
 )
 
 
@@ -223,6 +224,33 @@ class CloneEngine:
                 except OSError:
                     pass
             raise
+        finally:
+            self._cleanup()
+
+    def restore_bundle(self, bundle, dst_disk):
+        """Restaure une sauvegarde bundle partclone (table sfdisk + images .pc)
+        sur `dst_disk` (EFFACÉ), avec une IDENTITÉ NEUVE comme `clone()` :
+        nouveaux label-id/UUID/PARTUUID, fstab + boot.scr réécrits, initramfs
+        reconstruit. `bundle` provient de `clone_core.find_partclone_bundle`.
+
+        Ne touche jamais la source (lecture de fichiers). Nécessite
+        `partclone.restore` (paquet partclone) et e2fsprogs
+        (`e2fsck`/`resize2fs`/`tune2fs`). LÈVE en cas d'échec, nettoie toujours.
+        """
+        if not shutil.which("partclone.restore"):
+            raise RuntimeError("partclone.restore introuvable : installe le "
+                               "paquet 'partclone' (sudo apt install partclone).")
+        try:
+            self._do_restore_bundle(bundle, dst_disk)
+            self.log("\n=== TERMINÉ AVEC SUCCÈS ===")
+            self.log("Le disque restauré a une identité NEUVE (UUID/PARTUUID, "
+                     "fstab + boot.scr + initramfs) : aucune collision avec la "
+                     "source.")
+            return ("Restauration terminée avec succès.\n\nLe disque a ses "
+                    "propres UUID/PARTUUID (identité régénérée, racine étendue à "
+                    "la cible).\n\nMode SPI : il ne boote que sur une carte dont "
+                    "la puce SPI porte le golden — flashe la SPI (onglet SPI), "
+                    "puis vérifie avec odroid-station check.")
         finally:
             self._cleanup()
 
@@ -856,3 +884,119 @@ class CloneEngine:
         # -p : sonde directement les périphériques, sans le cache blkid (qui
         # pourrait encore montrer d'anciennes valeurs après re-formatage).
         log(run(["blkid", "-p", src_p1, src_p2, dst_p1, dst_p2]))
+
+    # ---------- Restauration d'un bundle partclone ----------
+    def _partclone_restore(self, pc, dstp):
+        """Restaure une image partclone `pc` dans la partition `dstp`."""
+        self._force_unmount(dstp)
+        self.log(f"partclone.restore {os.path.basename(pc)} -> {dstp}")
+        r = subprocess.run(["partclone.restore", "-s", pc, "-o", dstp],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"partclone.restore a échoué ({dstp}) :\n"
+                               f"{(r.stderr or r.stdout)[-2000:]}")
+
+    def _do_restore_bundle(self, bundle, dst_disk):
+        log = self.log
+        self._progress(0, "Préparation...")
+
+        parts = bundle["parts"]
+        nums = [n for n, _ in parts]
+        if nums != [1, 2]:
+            raise RuntimeError(f"Bundle inattendu : partitions {nums} "
+                               "(2 attendues : BOOT + rootfs).")
+        with open(bundle["sfdisk"], encoding="utf-8") as f:
+            src_dump = f.read()
+
+        for part in disk_partitions(dst_disk):
+            self._force_unmount(part)
+
+        # Table de partitions NEUVE : label-id régénéré (identité distincte de la
+        # source), dernière partition étendue à la taille de la cible.
+        label_type = "gpt" if "label: gpt" in src_dump else "dos"
+        old_label_id = sfdisk_label_id(src_dump)
+        new_label_id = gen_label_id(label_type)
+        log(f"Écriture de la table de partitions sur {dst_disk} "
+            f"(NOUVELLE identité label-id={new_label_id}, racine étendue)...")
+        script = build_dst_script(src_dump, new_label_id=new_label_id)
+        r = subprocess.run(["sfdisk", "--wipe", "always", dst_disk],
+                           input=script, text=True, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"sfdisk a échoué:\n{r.stderr}")
+        dst_p1, dst_p2 = part_name(dst_disk, 1), part_name(dst_disk, 2)
+        self._wait_for_node(dst_p1)
+        self._wait_for_node(dst_p2)
+
+        # Restauration partclone (les fs restaurés portent les UUID de la SOURCE).
+        for i, (num, pc) in enumerate(parts):
+            self._progress(5 + i * 40, f"Restauration partition {num}...")
+            self._partclone_restore(pc, part_name(dst_disk, num))
+
+        # Identité de la SOURCE (à retrouver dans fstab/boot du clone et à
+        # remplacer) : fs UUID = ce que partclone vient d'écrire ; PARTUUID/label
+        # = dérivés de l'ancien label-id de la table source.
+        old_uuid = {n: blkid_value(part_name(dst_disk, n), "UUID") for n in nums}
+
+        # Identité FRAÎCHE : e2fsck (fs propre), resize2fs (rootfs -> remplit la
+        # cible), tune2fs -U random (UUID neuf, sinon = celui de la source).
+        for num in nums:
+            dstp = part_name(dst_disk, num)
+            self._progress(88, "Vérification / redimensionnement...")
+            subprocess.run(["e2fsck", "-fy", dstp], capture_output=True, text=True)
+            if num == nums[-1]:
+                rr = subprocess.run(["resize2fs", dstp], capture_output=True, text=True)
+                if rr.returncode != 0:
+                    raise RuntimeError(f"resize2fs a échoué ({dstp}):\n{rr.stderr}")
+                log(f"Racine {dstp} étendue à la taille de la partition.")
+            rr = subprocess.run(["tune2fs", "-U", "random", dstp],
+                                capture_output=True, text=True)
+            if rr.returncode != 0:
+                raise RuntimeError(f"tune2fs -U a échoué ({dstp}):\n{rr.stderr}")
+
+        # Table de correspondance ancienne -> nouvelle identité.
+        self._id_subs = {}
+        for num in nums:
+            dstp = part_name(dst_disk, num)
+            o_uuid, n_uuid = old_uuid[num], blkid_value(dstp, "UUID")
+            if o_uuid and n_uuid and o_uuid.lower() != n_uuid.lower():
+                self._id_subs[o_uuid] = n_uuid
+            n_puid = blkid_value(dstp, "PARTUUID")
+            o_puid = (dos_partuuid(old_label_id, num)
+                      if label_type == "dos" and old_label_id else "")
+            if o_puid and n_puid and o_puid.lower() != n_puid.lower():
+                self._id_subs[o_puid] = n_puid
+        new_disk_id = disk_label_id(dst_disk)
+        if old_label_id:
+            o_lab = old_label_id[2:] if old_label_id.lower().startswith("0x") else old_label_id
+            if o_lab and new_disk_id and o_lab.lower() != new_disk_id.lower():
+                self._id_subs[o_lab] = new_disk_id
+        if self._id_subs:
+            log("Correspondance d'identité (source -> clone) :")
+            for old, new in sorted(self._id_subs.items(), key=lambda kv: -len(kv[0])):
+                log(f"  {old} -> {new}")
+        else:
+            log("⚠ Aucune correspondance d'identité construite (UUID illisibles ?).")
+
+        # Montage + réécriture fstab/boot.scr + initramfs (machinerie commune).
+        self._mount(dst_p1, "/mnt/clone_dst_boot")
+        self._mount(dst_p2, "/mnt/clone_dst_root")
+        new_ids = {"uuid_p2": blkid_value(dst_p2, "UUID"),
+                   "puid_p2": blkid_value(dst_p2, "PARTUUID")}
+        self._augment_subs_from_bootscr("/mnt/clone_dst_boot",
+                                        "/mnt/clone_dst_root", new_ids)
+        log("Réécriture de l'identité dans la config du clone (fstab, boot)...")
+        self._rewrite_clone_identity(self._id_subs, "/mnt/clone_dst_root",
+                                     "/mnt/clone_dst_boot")
+
+        self._progress(99, "Initramfs + finalisation...")
+        self._rebuild_initramfs("/mnt/clone_dst_root", "/mnt/clone_dst_boot")
+
+        log("Synchronisation des écritures (sync)...")
+        for mp in ("/mnt/clone_dst_boot", "/mnt/clone_dst_root"):
+            subprocess.run(["umount", mp], capture_output=True)
+            if mp in self._cleanup_mounts:
+                self._cleanup_mounts.remove(mp)
+        subprocess.run(["sync"], capture_output=True)
+
+        log("\nVérification finale (UUID/PARTUUID du clone) :")
+        log(run(["blkid", "-p", dst_p1, dst_p2]))

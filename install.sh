@@ -70,12 +70,12 @@ if command -v apt-get >/dev/null 2>&1; then
     $SUDO apt-get install -y \
         flashrom u-boot-tools mtd-utils \
         python3 python3-tk \
-        util-linux parted rsync dosfstools e2fsprogs \
+        util-linux parted rsync dosfstools e2fsprogs partclone \
         xserver-xorg xinit x11-xserver-utils
 else
     echo "⚠ apt introuvable : installe manuellement flashrom, u-boot-tools,"
     echo "  mtd-utils, python3-tk, parted, rsync, dosfstools, e2fsprogs,"
-    echo "  xserver-xorg, xinit, x11-xserver-utils."
+    echo "  partclone, xserver-xorg, xinit, x11-xserver-utils."
 fi
 
 # --- Lanceur UNIQUE : odroid-station (GUI sans argument, CLI en sous-commandes) ---

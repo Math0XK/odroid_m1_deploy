@@ -1,0 +1,10 @@
+# Sauvegardes disque (bundle partclone + images) : BEAUCOUP trop volumineuses
+# pour un dépôt git ordinaire (le rootfs.pc fait ~16 Go). À conserver HORS dépôt
+# (Git LFS, NAS, stockage d'artefacts) — voir README.md. Seul le golden SPI
+# (16 MiO, ../spi/) reste versionné.
+*.pc
+*.img
+*.img.zst
+*.bin
+*.sfdisk
+!README.md

@@ -104,7 +104,8 @@ def flashrom_cmd(op, programmer, path, chip=None):
     """argv flashrom pour une opération, sans l'exécuter.
 
     op ∈ {"read","write","verify"} ; `programmer` est passé tel quel à `-p`
-    (`ch341a_spi` à la pince CH341A, carte hors tension — seule méthode).
+    (`ch341a_spi` à la pince CH341A, carte hors tension). Sans pince, le flash
+    se fait au prompt U-Boot (`sf write`), hors de cet outil.
     `chip` (option `-c`) n'est utile que si l'auto-détection échoue.
     """
     flag = {"read": "-r", "write": "-w", "verify": "-v"}[op]

@@ -80,20 +80,36 @@ spi|check`, voir `odroid-station --help`) — même code, mêmes garde-fous.
 
 ---
 
-## 3. Étape 1 — Sauvegarder le golden depuis le master (pince)
+## 3. Étape 1 — Sauvegarder le golden depuis le master
 
-Sur le **master** (celui qui boote correctement), **hors tension**, pince SOIC-8 sur
-la puce SPI :
+### A. Depuis le prompt U-Boot — `sf read` (SANS pince, recommandé)
 
-```bash
-sudo odroid-station            # onglet "SPI (Golden / Flash / Env)"
-# ou en SSH : sudo odroid-station spi read
+Sur le master, au prompt U-Boot, lire la puce brute entière vers une clé USB :
+```text
+=> sf probe
+=> sf read ${kernel_addr_r} 0x0 0x1000000
+=> usb start
+=> fatwrite usb 0:1 ${kernel_addr_r} fulldump_spi.bin 0x1000000
 ```
-Programmer = **« Pince CH341A »** → **« Lire la puce → golden »**. L'outil :
-1. lit les 16 MiO (`flashrom -p ch341a_spi -r …`) ;
-2. valide (taille exacte, image non vierge, bannière `U-Boot`) — refuse sinon ;
-3. écrit `images/spi/golden_spi_16MiB.bin` + `.sha256` ;
-4. avertit si l'env contient une `ethaddr` figée (voir §4).
+Récupérer `fulldump_spi.bin` (16 Mio) depuis la clé, le renommer
+`golden_spi_16MiB.bin` et générer le manifeste :
+```bash
+mv fulldump_spi.bin images/spi/golden_spi_16MiB.bin
+( cd images/spi && sha256sum golden_spi_16MiB.bin \
+    | awk '{print $1"  golden_spi_16MiB.bin"}' > golden_spi_16MiB.bin.sha256 )
+```
+Contrôler qu'il est valide (16 Mio, bannière U-Boot, non vierge) avant de le
+diffuser : `sudo odroid-station spi verify --file images/spi/golden_spi_16MiB.bin`
+échoue sans pince, mais l'import via l'outil (ou un simple contrôle du magic
+`RKNS` en tête + `U-Boot` présent) suffit à valider le dump.
+
+### B. À la pince CH341A (alternative, master hors tension)
+
+Pince SOIC-8 sur la puce : `sudo odroid-station` (onglet SPI) → **« Pince
+CH341A »** → **« Lire la puce → golden »** (ou `sudo odroid-station spi read`).
+L'outil lit les 16 MiO (`flashrom -p ch341a_spi -r …`), valide (taille exacte,
+image non vierge, bannière `U-Boot`), écrit `images/spi/golden_spi_16MiB.bin` +
+`.sha256`, et avertit si l'env contient une `ethaddr` figée (voir §4).
 
 Puis **committer** le golden (source de vérité versionnée) :
 ```bash
@@ -135,27 +151,43 @@ valeur), **ou** flasher par-partition (mtd0/mtd2 seuls) + `fw_setenv` par unité
 
 ## 5. Étape 3 — Flasher la SPI d'une unité
 
-`sudo odroid-station` (onglet SPI) → **« Flasher cette unité avec le golden »** —
-ou en SSH : `sudo odroid-station spi flash`. L'outil sauvegarde d'abord la puce
-cible (`preflash_backups/`), contrôle le golden (taille + signature + SHA256 ==
-manifeste), demande confirmation, écrit et vérifie.
+La puce SPI se flashe **hors de Linux** : le contrôleur SFC du RK3568 n'expose
+pas la puce entière au noyau Linux (`flashrom -p internal` n'existe pas sur le
+flashrom ARM64 ; les partitions MTD ne couvrent pas les 16 MiO). Deux voies :
 
-- **Pince CH341A** (seule méthode) : unité **hors tension**, pince SOIC-8 sur la
-  puce, marche même sur une carte vierge/briquée.
-- Le flash/lecture **on-device** (« à chaud », `internal`) n'est **pas supporté** :
-  le contrôleur SPI du RK3568 (SFC) n'expose pas la puce entière à Linux
-  (`flashrom -p internal` n'existe pas sur le flashrom ARM64 ; les partitions MTD
-  ne couvrent pas les 16 MiO). Toujours passer par la pince, carte hors tension.
+### A. Depuis le prompt U-Boot — `sf` (SANS pince, recommandé)
 
-> **Case « Mode simulation »** : journalise les commandes `flashrom` exactes sans
-> rien exécuter — à utiliser pour relire un enchaînement avant de le lancer pour de
-> vrai.
+La commande `sf` d'U-Boot parle directement au SFC et voit la puce brute
+entière. Golden sur une clé USB (FAT), au prompt U-Boot de l'unité :
+```text
+=> sf probe
+=> usb start
+=> fatload usb 0:1 ${kernel_addr_r} golden_spi_16MiB.bin
+=> sf erase 0x0 0x1000000
+=> sf write ${kernel_addr_r} 0x0 0x1000000
+```
+Vérifier (relecture dans une autre zone RAM + comparaison) :
+```text
+=> sf read 0x10000000 0x0 0x1000000
+=> cmp.b ${kernel_addr_r} 0x10000000 0x1000000        # doit dire « match »
+```
+Le golden étant un dump **brut** (`sf read 0x0 0x1000000`), le `sf write` le
+restaure octet pour octet (idbloader rkspi compris) — marche sur une carte
+vierge. C'est aussi ainsi qu'on **produit** le golden (`sf read` + `fatwrite`).
 
-Équivalent manuel (pince) :
+### B. À la pince CH341A (alternative, carte hors tension)
+
+`sudo odroid-station` (onglet SPI) → **« Flasher cette unité avec le golden »**,
+ou `sudo odroid-station spi flash`. L'outil sauvegarde d'abord la puce
+(`preflash_backups/`), contrôle le golden (taille + signature + SHA256 ==
+manifeste), demande confirmation, écrit et vérifie. Marche même sur une carte
+briquée. Équivalent manuel :
 ```bash
 sudo flashrom -p ch341a_spi -r preflash_backup.bin          # filet
 sudo flashrom -p ch341a_spi -w images/spi/golden_spi_16MiB.bin
 ```
+> **Case « Mode simulation »** : journalise les commandes `flashrom` exactes sans
+> rien exécuter — pour relire un enchaînement avant de le lancer pour de vrai.
 
 ---
 
@@ -186,6 +218,7 @@ sudo odroid-station            # onglet "Clone / Image"
 # ou en SSH :
 sudo odroid-station clone --source /dev/sda --dest /dev/nvme0n1
 sudo odroid-station clone --image images/nvme/odroid_m1_nvme.img --dest /dev/nvme0n1
+sudo odroid-station clone --image images/nvme --dest /dev/nvme0n1   # bundle partclone (dossier)
 ```
 - **Mode de boot = « SPI »** (défaut) : le clone reçoit une identité neuve
   (UUID/PARTUUID), fstab + `boot.scr` (CRC recalculés, `cma=128M` préservé) + initramfs
@@ -203,6 +236,14 @@ sudo odroid-station image --source /dev/sda --out images/nvme/odroid_m1_nvme.img
 L'image est **taillée sur l'espace UTILISÉ** de la racine (pas la capacité du
 disque : un NVMe 128 Go rempli à 20 % → ~30 Go) et **sparse**. Au clonage depuis
 l'image, la racine est ré-étendue à la taille de la cible.
+
+**Sauvegarde partclone (bundle).** Une sauvegarde type Clonezilla (table
+`.sfdisk` + une image `.pc` par partition, cf. [`../images/nvme/`](../images/nvme/))
+se restaure en pointant `--image` sur le **dossier** du bundle (source
+« Sauvegarde partclone » dans l'onglet). L'outil écrit la table (identité neuve,
+racine étendue), `partclone.restore` chaque partition, agrandit le rootfs
+(`resize2fs`), régénère les UUID puis réécrit `fstab`/`boot.scr` + initramfs —
+mêmes garde-fous que le clonage disque. Nécessite le paquet `partclone`.
 
 **Clone à FROID uniquement.** Le clonage et l'imagerie lisent toujours un disque
 source **éteint** (l'Odroid source hors tension, sa carte/eMMC/NVMe branchée en

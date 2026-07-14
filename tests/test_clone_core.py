@@ -135,3 +135,53 @@ def test_extract_root_ids_dedup_et_vide():
     body = b"root=UUID=aa11-bb22 ... UUID=aa11-bb22 ...\n"
     assert cc.extract_root_ids(body) == [("UUID", "aa11-bb22")]
     assert cc.extract_root_ids(b"root=/dev/nvme0n1p2 ro\n") == []
+
+
+# --- Bundle partclone : détection + dérivation d'identité ---
+def test_sfdisk_label_id():
+    assert cc.sfdisk_label_id(SFDISK_DUMP) == "0x103fe0ed"
+    assert cc.sfdisk_label_id("label: dos\nunit: sectors\n") is None
+
+
+def test_dos_partuuid():
+    assert cc.dos_partuuid("0x9d6cd9bd", 1) == "9d6cd9bd-01"
+    assert cc.dos_partuuid("9D6CD9BD", 2) == "9d6cd9bd-02"
+
+
+def test_is_partclone_image(tmp_path):
+    good = tmp_path / "p1.pc"
+    good.write_bytes(b"partclone-image\x00" + b"0.3.17")
+    bad = tmp_path / "p2.pc"
+    bad.write_bytes(b"not a partclone file")
+    assert cc.is_partclone_image(str(good))
+    assert not cc.is_partclone_image(str(bad))
+    assert not cc.is_partclone_image(str(tmp_path / "absent.pc"))
+
+
+def test_find_partclone_bundle(tmp_path):
+    (tmp_path / "sda-partition-table.sfdisk").write_text(SFDISK_DUMP)
+    (tmp_path / "sda1-BOOT.pc").write_bytes(b"partclone-image")
+    (tmp_path / "sda2-rootfs.pc").write_bytes(b"partclone-image")
+    (tmp_path / "sda-first1M.bin").write_bytes(b"\x00" * 16)
+    b = cc.find_partclone_bundle(str(tmp_path))
+    assert b is not None
+    assert b["sfdisk"].endswith("sda-partition-table.sfdisk")
+    assert b["first1m"].endswith("sda-first1M.bin")
+    assert [n for n, _ in b["parts"]] == [1, 2]
+    assert b["parts"][0][1].endswith("sda1-BOOT.pc")
+
+
+def test_find_partclone_bundle_ordonne_par_numero(tmp_path):
+    (tmp_path / "t.sfdisk").write_text(SFDISK_DUMP)
+    # créés dans le désordre : le tri se fait sur le numéro de partition
+    (tmp_path / "nvme0n1p2-rootfs.pc").write_bytes(b"x")
+    (tmp_path / "nvme0n1p1-BOOT.pc").write_bytes(b"x")
+    b = cc.find_partclone_bundle(str(tmp_path))
+    assert [n for n, _ in b["parts"]] == [1, 2]
+
+
+def test_find_partclone_bundle_absent(tmp_path):
+    assert cc.find_partclone_bundle(str(tmp_path)) is None            # vide
+    (tmp_path / "x.sfdisk").write_text("label: dos\n")
+    assert cc.find_partclone_bundle(str(tmp_path)) is None            # pas de .pc
+    assert cc.find_partclone_bundle(str(tmp_path / "nope")) is None   # inexistant

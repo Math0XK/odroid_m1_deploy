@@ -15,10 +15,11 @@ garde-fous) vivent dans `spi_ops.SpiOps`, partagé avec les sous-commandes CLI
 `station.py spi …` — même code, mêmes garde-fous des deux côtés. La logique pure
 (validation d'image, parsers) est dans `spi_core` (testée sans matériel).
 
-Une seule méthode : à la PINCE CH341A (clip SOIC-8), carte HORS TENSION
-(`flashrom -p ch341a_spi`) — marche même sur une unité vierge/briquée. Le
-flash/lecture on-device (« à chaud ») a été retiré : le contrôleur SPI du RK3568
-n'expose pas la puce entière à Linux (voir docs/DEPLOIEMENT_FLOTTE.md).
+Méthode de l'outil : à la PINCE CH341A (clip SOIC-8), carte HORS TENSION
+(`flashrom -p ch341a_spi`) — marche même sur une unité vierge/briquée. Le flash
+SPI depuis Linux n'est pas possible (le SFC du RK3568 n'expose pas la puce
+entière) ; sans pince, flasher depuis le prompt U-Boot avec `sf write` (voir
+docs/DEPLOIEMENT_FLOTTE.md §5).
 
 Case « Mode simulation » : n'exécute RIEN, journalise seulement les commandes
 flashrom/fw_setenv exactes (revue de sécurité, sans matériel).
@@ -59,8 +60,11 @@ class SpiPanel(ttk.Frame):
         # --- Programmer (unique : pince CH341A ; on-device « à chaud » retiré) ---
         prog_frame = ttk.LabelFrame(self, text="Programmer (flashrom)")
         prog_frame.pack(fill="x", **pad)
-        ttk.Label(prog_frame,
-                  text="Pince CH341A (clip SOIC-8) — carte HORS TENSION.").pack(
+        ttk.Label(prog_frame, wraplength=820, justify="left", foreground="#666",
+                  text="Pince CH341A (clip SOIC-8), carte HORS TENSION. Sans "
+                       "pince : flasher depuis le prompt U-Boot avec « sf write » "
+                       "(voir docs/DEPLOIEMENT_FLOTTE.md §5). Le flash SPI depuis "
+                       "Linux n'est pas possible sur cette carte.").pack(
             anchor="w", padx=8, pady=(6, 0))
         self.var_sim = tk.BooleanVar(value=False)
         ttk.Checkbutton(prog_frame, variable=self.var_sim,

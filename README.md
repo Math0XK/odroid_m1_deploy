@@ -70,7 +70,8 @@ X11), mêmes moteurs, mêmes garde-fous :
 ```bash
 sudo odroid-station list                                        # disques détectés
 sudo odroid-station clone --source /dev/sda --dest /dev/nvme0n1 # clonage à froid
-sudo odroid-station clone --image master.img --dest /dev/nvme0n1
+sudo odroid-station clone --image master.img --dest /dev/nvme0n1        # image .img
+sudo odroid-station clone --image images/nvme --dest /dev/nvme0n1       # bundle partclone (dossier)
 sudo odroid-station image --source /dev/sda --out master.img    # image COMPACTE
 sudo odroid-station spi read                                    # puce SPI -> golden (pince)
 sudo odroid-station spi flash                                   # golden -> puce (pince)
@@ -85,14 +86,21 @@ Points notables :
   la racine, pas sur la capacité du disque — un NVMe 128 Go rempli à 20 % donne
   ~30 Go, en fichier **sparse**. Au clonage depuis l'image, la racine est
   ré-étendue à la taille de la cible.
+- **Restauration partclone** : `clone --image <DOSSIER>` (ou source « Sauvegarde
+  partclone » dans l'onglet) restaure une sauvegarde type Clonezilla (table
+  `.sfdisk` + une image `.pc` par partition) sur un disque vierge, avec la même
+  identité neuve, réécriture `fstab`/`boot.scr` et initramfs que le clonage
+  disque. Nécessite le paquet `partclone`.
 - **Clone à FROID uniquement** : la source est un Odroid **éteint** dont la
   carte/eMMC/NVMe est branchée en lecteur USB (ou un fichier image). Le disque
   **système** de la machine en marche est **refusé** en source comme en
   destination — pas d'auto-clonage à chaud.
-- **SPI à la PINCE CH341A** : lecture du golden sur le master et flash de la
-  flotte se font à la pince SOIC-8, **carte hors tension** (`ch341a_spi`). Le
-  flash/lecture on-device (« à chaud ») n'est pas supporté : le contrôleur SPI
-  du RK3568 n'expose pas la puce entière à Linux.
+- **SPI hors de Linux** : le flash SPI ne se fait pas depuis Linux (le SFC du
+  RK3568 n'expose pas la puce entière — `flashrom -p internal` inexistant, MTD
+  partitionné). Deux voies : **(1) prompt U-Boot `sf`** (SANS pince, recommandé —
+  `sf read`/`sf write` voient la puce brute 16 Mio ; golden sur clé USB) ; **(2)
+  pince CH341A** carte hors tension (`odroid-station spi read|flash`, `ch341a_spi`).
+  Détail des commandes : [`docs/DEPLOIEMENT_FLOTTE.md`](docs/DEPLOIEMENT_FLOTTE.md) §3/§5.
 - `--sim` (ou case « Mode simulation ») : journalise les commandes exactes sans
   rien exécuter.
 
@@ -114,7 +122,8 @@ odroid_m1_deploy/
                              GUI/CLI : garde-fous, backup pré-flash, SHA256
     spi_panel.py            onglet SPI (golden / flash flotte / env)
     clone_core.py           logique pure du clonage (testée)
-    clone_engine.py         MOTEUR clonage à froid + image compacte (sans UI)
+    clone_engine.py         MOTEUR clonage à froid + image compacte + restore
+                             partclone (sans UI)
     clone_panel.py          onglet Clone / Image
     verify_panel.py         onglet Vérification
     check_deploy.py         contrôles GO/NO-GO (module partagé onglet/CLI)

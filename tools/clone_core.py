@@ -172,6 +172,76 @@ def bootloader_gap_present(sector64_bytes):
     return sector64_bytes[:4] == RK_IDBLOADER_MAGIC
 
 
+# --------------------------------------------------------------------------
+# Sauvegarde « bundle » partclone (table sfdisk + une image .pc par partition)
+# --------------------------------------------------------------------------
+# Format produit par une sauvegarde type Clonezilla / partclone :
+#   <prefixe>-partition-table.sfdisk   table de partitions (sfdisk -d)
+#   <prefixe><N>-<label>.pc            image partclone de la partition N
+#   <prefixe>-first1M.bin              (optionnel) 1er Mio brut (table + gap)
+# Restaurable sur un disque vierge : cf. CloneEngine.restore_bundle.
+PARTCLONE_MAGIC = b"partclone-image"
+
+
+def is_partclone_image(path):
+    """Vrai si `path` commence par le magic partclone (`partclone-image`)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(PARTCLONE_MAGIC)) == PARTCLONE_MAGIC
+    except OSError:
+        return False
+
+
+def find_partclone_bundle(dirpath):
+    """Détecte une sauvegarde bundle partclone dans le répertoire `dirpath`.
+
+    Retourne un dict {'sfdisk': chemin, 'first1m': chemin|None,
+    'parts': [(num, chemin_pc), ...] trié par numéro de partition}, ou None si
+    le répertoire ne contient pas au moins une table `.sfdisk` et une image
+    `.pc` nommée `…<N>-….pc`. Ne lit aucun contenu (validation du magic à part) :
+    testable sans matériel.
+    """
+    if not dirpath or not os.path.isdir(dirpath):
+        return None
+    entries = sorted(os.listdir(dirpath))
+    sfdisks = [e for e in entries if e.endswith(".sfdisk")]
+    if not sfdisks:
+        return None
+    parts = []
+    for e in entries:
+        # numéro = dernier groupe de chiffres juste avant « -<label>.pc »
+        # (marche pour sda1-…, mmcblk0p1-…, nvme0n1p2-…).
+        m = re.search(r"(\d+)-[^-]*\.pc$", e)
+        if m:
+            parts.append((int(m.group(1)), os.path.join(dirpath, e)))
+    if not parts:
+        return None
+    parts.sort()
+    first1m = next((os.path.join(dirpath, e) for e in entries
+                    if e.lower().endswith("first1m.bin")), None)
+    return {
+        "sfdisk": os.path.join(dirpath, sfdisks[0]),
+        "first1m": first1m,
+        "parts": parts,
+    }
+
+
+def sfdisk_label_id(dump):
+    """`label-id:` d'un dump sfdisk (`0x…` en dos, UUID en gpt), ou None."""
+    m = re.search(r"(?mi)^\s*label-id:\s*(\S+)", dump)
+    return m.group(1) if m else None
+
+
+def dos_partuuid(label_id, num):
+    """PARTUUID d'une partition MBR tel que le voit blkid : les 8 chiffres hex
+    du label-id (sans `0x`, minuscules) + `-NN` (numéro sur 2 chiffres).
+    Ex. ('0x9d6cd9bd', 1) -> '9d6cd9bd-01'."""
+    h = label_id.lower()
+    if h.startswith("0x"):
+        h = h[2:]
+    return f"{h}-{num:02d}"
+
+
 def parse_start_size(src_dump, part_dev):
     """(start, size) en secteurs d'une partition dans un dump sfdisk."""
     for line in src_dump.splitlines():

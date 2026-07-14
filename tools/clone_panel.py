@@ -10,13 +10,16 @@ dans `clone_engine.CloneEngine`, partagé avec les sous-commandes CLI
 `station.py clone` / `station.py image` (SSH sans X11) : même code, mêmes
 garde-fous des deux côtés.
 
-SOURCE — deux façons (À FROID uniquement : le disque système en marche est
+SOURCE — trois façons (À FROID uniquement : le disque système en marche est
 toujours refusé en source) :
   - disque physique à FROID (défaut) : l'Odroid source éteint, sa carte/eMMC/NVMe
     branché en lecteur USB. La source est remontée read-only : instantané figé,
     le chemin recommandé pour un master de flotte ;
   - fichier image (.img) : monté en loop device (typiquement une image compacte
-    produite ici même).
+    produite ici même) ;
+  - sauvegarde partclone (dossier) : table `.sfdisk` + une image `.pc` par
+    partition (type Clonezilla) ; restaurée via `partclone.restore` avec la même
+    identité neuve / réécriture fstab-boot.scr / initramfs que le clonage disque.
 
 DESTINATION — deux façons :
   - disque physique (sera EFFACÉ) : le clonage classique ;
@@ -49,7 +52,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
-from clone_core import list_block_devices
+from clone_core import find_partclone_bundle, list_block_devices
 from clone_engine import CloneEngine, assert_not_system_disk
 
 
@@ -83,9 +86,12 @@ class ClonePanel(ttk.Frame):
                         value="disk", command=self._toggle_src).grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(src_frame, text="Fichier image (.img)", variable=self.src_mode,
                         value="image", command=self._toggle_src).grid(row=0, column=1, sticky="w")
+        ttk.Radiobutton(src_frame, text="Sauvegarde partclone (dossier)",
+                        variable=self.src_mode, value="bundle",
+                        command=self._toggle_src).grid(row=0, column=2, sticky="w")
 
         self.src_disk_combo = ttk.Combobox(src_frame, width=60, state="readonly")
-        self.src_disk_combo.grid(row=1, column=0, columnspan=2, sticky="we", padx=4, pady=4)
+        self.src_disk_combo.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
 
         self.src_image_entry = ttk.Entry(src_frame, width=50)
         self.src_image_btn = ttk.Button(src_frame, text="Parcourir...", command=self._browse_image)
@@ -94,7 +100,7 @@ class ClonePanel(ttk.Frame):
         ttk.Label(src_frame, foreground="#666",
                   text="Clone à FROID uniquement : le disque système en marche est "
                        "refusé en source (éteins l'Odroid, branche sa carte en USB).").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
+            row=2, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
 
         # --- Destination ---
         dst_frame = ttk.LabelFrame(self, text="Destination")
@@ -178,11 +184,11 @@ class ClonePanel(ttk.Frame):
         if self.src_mode.get() == "disk":
             self.src_image_entry.grid_forget()
             self.src_image_btn.grid_forget()
-            self.src_disk_combo.grid(row=1, column=0, columnspan=2, sticky="we", padx=4, pady=4)
+            self.src_disk_combo.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
         else:
             self.src_disk_combo.grid_forget()
-            self.src_image_entry.grid(row=1, column=0, sticky="we", padx=4, pady=4)
-            self.src_image_btn.grid(row=1, column=1, sticky="w", padx=4, pady=4)
+            self.src_image_entry.grid(row=1, column=0, columnspan=2, sticky="we", padx=4, pady=4)
+            self.src_image_btn.grid(row=1, column=2, sticky="w", padx=4, pady=4)
 
     def _toggle_dst(self):
         if self.dst_mode.get() == "disk":
@@ -205,7 +211,11 @@ class ClonePanel(ttk.Frame):
             self.clone_btn.configure(text="Créer l'image compacte")
 
     def _browse_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images disque", "*.img *.iso *.bin"), ("Tous", "*.*")])
+        if self.src_mode.get() == "bundle":
+            path = filedialog.askdirectory(title="Dossier de la sauvegarde partclone")
+        else:
+            path = filedialog.askopenfilename(
+                filetypes=[("Images disque", "*.img *.iso *.bin"), ("Tous", "*.*")])
         if path:
             self.src_image_entry.delete(0, tk.END)
             self.src_image_entry.insert(0, path)
@@ -276,7 +286,8 @@ class ClonePanel(ttk.Frame):
     # ---------- Sélections communes ----------
     def _selected_source(self):
         """(src_disk, img_path) selon le mode source, ou None si invalide
-        (l'erreur est déjà affichée)."""
+        (l'erreur est déjà affichée). En mode bundle, img_path est le DOSSIER de
+        la sauvegarde partclone (le worker route vers restore_bundle)."""
         if self.src_mode.get() == "disk":
             src_label = self.src_disk_combo.get()
             if not src_label:
@@ -284,6 +295,13 @@ class ClonePanel(ttk.Frame):
                 return None
             return self._disks[src_label], None
         img_path = self.src_image_entry.get().strip()
+        if self.src_mode.get() == "bundle":
+            if not img_path or find_partclone_bundle(img_path) is None:
+                messagebox.showerror(
+                    "Erreur", "Sélectionne un dossier de sauvegarde partclone "
+                    "(table .sfdisk + images .pc).")
+                return None
+            return None, img_path
         if not img_path or not os.path.isfile(img_path):
             messagebox.showerror("Erreur", "Sélectionne un fichier image valide.")
             return None
@@ -402,7 +420,11 @@ class ClonePanel(ttk.Frame):
                              boot_mode=self._boot_mode_val,
                              boot_medium=self._boot_medium)
         try:
-            msg = engine.clone(src_disk, dst_disk, img_path=img_path)
+            # img_path pointant sur un DOSSIER = sauvegarde partclone -> restore.
+            if img_path and os.path.isdir(img_path):
+                msg = engine.restore_bundle(find_partclone_bundle(img_path), dst_disk)
+            else:
+                msg = engine.clone(src_disk, dst_disk, img_path=img_path)
             self._ui_queue.put(("done", msg))
         except Exception as e:
             self.log_write(f"\n=== ERREUR ===\n{e}")

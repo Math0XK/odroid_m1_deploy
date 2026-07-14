@@ -26,9 +26,10 @@ les mêmes garde-fous — pas de duplication GUI/CLI :
     sudo odroid-station spi env-save             # dump fw_printenv
     sudo odroid-station check [--npu-cmd "…"]    # GO/NO-GO post-déploiement
 
-`spi --programmer` : `ch341a_spi` (pince CH341A, carte hors tension) — seule
-méthode ; le flash/lecture on-device (« à chaud ») n'est pas supporté sur cette
-carte. `--sim` journalise les commandes sans rien exécuter.
+`spi --programmer` : `ch341a_spi` (pince CH341A, carte hors tension). Le flash
+SPI depuis Linux n'est pas possible (SFC RK3568) ; sans pince, flasher au prompt
+U-Boot (`sf write`, cf. docs/DEPLOIEMENT_FLOTTE.md §5). `--sim` journalise les
+commandes sans rien exécuter.
 
 La confirmation interactive de `clone` exige de RETAPER le nom du disque de
 destination (ex. « sdb ») : sur un poste de flotte on efface des disques à la
@@ -40,7 +41,7 @@ import argparse
 import os
 import sys
 
-from clone_core import list_block_devices
+from clone_core import find_partclone_bundle, list_block_devices
 from clone_engine import CloneEngine, assert_not_system_disk
 from spi_ops import SpiOps
 import check_deploy
@@ -199,8 +200,15 @@ def _check_source(args, p):
 def cmd_clone(args, p):
     if not (args.source or args.image):
         p.error("clone : --source ou --image requis.")
-    if args.image and not os.path.isfile(args.image):
-        p.error(f"image introuvable : {args.image}")
+    bundle = None
+    if args.image:
+        if os.path.isdir(args.image):
+            bundle = find_partclone_bundle(args.image)
+            if bundle is None:
+                p.error(f"{args.image} n'est pas un bundle partclone "
+                        "(table .sfdisk + images .pc attendues).")
+        elif not os.path.isfile(args.image):
+            p.error(f"image introuvable : {args.image}")
     if args.source and args.source == args.dest:
         p.error("source et destination identiques.")
     if args.boot_medium and args.boot_medium in (args.source, args.dest):
@@ -223,7 +231,10 @@ def cmd_clone(args, p):
     engine = CloneEngine(log=print, progress=ProgressPrinter(),
                          boot_mode=args.boot_mode, boot_medium=args.boot_medium)
     try:
-        msg = engine.clone(args.source, args.dest, img_path=args.image)
+        if bundle is not None:
+            msg = engine.restore_bundle(bundle, args.dest)
+        else:
+            msg = engine.clone(args.source, args.dest, img_path=args.image)
     except Exception as e:
         print(f"\n=== ERREUR ===\n{e}", file=sys.stderr)
         return 1
@@ -331,8 +342,10 @@ def build_parser():
     csrc.add_argument("--source", metavar="DEV",
                       help="disque source (à froid : l'Odroid source éteint, "
                            "branché en lecteur USB)")
-    csrc.add_argument("--image", metavar="FICHIER",
-                      help="fichier image source (.img), monté en loop device")
+    csrc.add_argument("--image", metavar="FICHIER|DOSSIER",
+                      help="image source : fichier .img (monté en loop device), "
+                           "OU dossier d'une sauvegarde partclone (table .sfdisk "
+                           "+ images .pc)")
     c.add_argument("--dest", metavar="DEV", required=True,
                    help="disque de destination (sera EFFACÉ)")
     c.add_argument("--boot-mode", choices=["spi", "disk"], default="spi",
@@ -365,7 +378,8 @@ def build_parser():
                    help="opération SPI")
     s.add_argument("--programmer", default="ch341a_spi",
                    help="programmer flashrom (défaut ch341a_spi : pince CH341A, "
-                        "carte hors tension — seule méthode supportée)")
+                        "carte hors tension). Sans pince : flasher au prompt "
+                        "U-Boot (sf write, cf. runbook §5)")
     s.add_argument("--file", metavar="FICHIER", default=DEFAULT_GOLDEN,
                    help=f"image SPI 16 MiO (défaut : {DEFAULT_GOLDEN})")
     s.add_argument("--sim", action="store_true",
