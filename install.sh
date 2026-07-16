@@ -37,6 +37,11 @@ else
     SUDO="sudo"
 fi
 
+# Sur une image fraîche, unattended-upgrades tient souvent le verrou apt/dpkg au
+# premier boot : sans ça, apt échoue sur « Could not get lock ». DPkg::Lock::Timeout
+# fait patienter apt (jusqu'à 10 min) qu'il se libère au lieu d'abandonner.
+APT="apt-get -o DPkg::Lock::Timeout=600"
+
 # --- Bootstrap (curl | sh) : pas de checkout à côté de ce script -> on clone ---
 # Détection : lancé depuis un pipe, $0 vaut "sh" (ou similaire) et il n'y a pas
 # de tools/station.py à côté. Depuis un checkout, le fichier existe.
@@ -45,8 +50,8 @@ if [ ! -f "$SCRIPT_DIR/tools/station.py" ]; then
     echo "Aucun checkout local détecté : bootstrap depuis $REPO_URL…"
     if ! command -v git >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
-            $SUDO apt-get update
-            $SUDO apt-get install -y git ca-certificates
+            $SUDO $APT update
+            $SUDO $APT install -y git ca-certificates
         else
             echo "⚠ git introuvable et pas d'apt : installe git puis relance." >&2
             exit 1
@@ -66,8 +71,8 @@ PKG="$SCRIPT_DIR"
 # --- Dépendances ---
 if command -v apt-get >/dev/null 2>&1; then
     echo "Installation des dépendances (apt)…"
-    $SUDO apt-get update
-    $SUDO apt-get install -y \
+    $SUDO $APT update
+    $SUDO $APT install -y \
         flashrom u-boot-tools mtd-utils \
         python3 python3-tk \
         util-linux parted rsync dosfstools e2fsprogs partclone \
