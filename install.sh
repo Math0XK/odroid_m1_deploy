@@ -139,7 +139,7 @@ En SSH sans X11, les mêmes opérations en sous-commandes :
   sudo odroid-station image …          # image disque COMPACTE (source de clonage)
   sudo odroid-station spi …            # read / verify / flash / env-apply / env-save
   sudo odroid-station check            # vérif post-déploiement GO/NO-GO
-  odroid-station --help                # détail des options (--live, --sim, …)
+  odroid-station --help                # détail des options (--sim, --yes, …)
 
 Runbook : $PKG/docs/DEPLOIEMENT_FLOTTE.md
 EOF

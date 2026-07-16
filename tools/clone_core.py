@@ -44,8 +44,10 @@ def blkid_value(dev, tag):
 
 def list_block_devices():
     """Liste des disques physiques (pas les partitions), avec repérage du
-    disque qui porte le système en cours d'exécution."""
-    out = run(["lsblk", "-J", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT"])
+    disque qui porte le système en cours d'exécution, le bus (usb/nvme/sata…)
+    et le numéro de série — de quoi identifier un disque SANS ambiguïté dans
+    l'interface (deux clés USB de même modèle se distinguent par leur série)."""
+    out = run(["lsblk", "-J", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT,TRAN,SERIAL"])
     data = json.loads(out)
 
     def mountpoints(node):
@@ -63,9 +65,27 @@ def list_block_devices():
             "path": f"/dev/{dev['name']}",
             "size": dev.get("size", "?"),
             "model": (dev.get("model") or "").strip(),
+            "tran": (dev.get("tran") or "").strip(),
+            "serial": (dev.get("serial") or "").strip(),
             "system": is_system,
         })
     return disks
+
+
+def disk_display_label(d):
+    """Libellé HUMAIN d'un disque pour les listes de l'interface :
+    « /dev/sda · 119,2G · Samsung SSD 870 · usb · S/N ABC123 [SYSTÈME] »."""
+    parts = [d["path"], d.get("size", "?")]
+    if d.get("model"):
+        parts.append(d["model"])
+    if d.get("tran"):
+        parts.append(d["tran"])
+    if d.get("serial"):
+        parts.append(f"S/N {d['serial']}")
+    label = "  ·  ".join(parts)
+    if d.get("system"):
+        label += "   [DISQUE SYSTÈME]"
+    return label
 
 
 def part_name(disk, num):
@@ -357,6 +377,22 @@ def extract_root_ids(data):
                 seen.add(key)
                 ids.append((kind, val))
     return ids
+
+
+# Features ext4 activées PAR DÉFAUT par les e2fsprogs récents (>= 1.47) mais
+# que le noyau vendor 5.10 de l'ODROID (ou un u-boot ancien) ne gère pas
+# forcément : un rootfs formaté avec sur le poste de clonage peut être REFUSÉ au
+# montage sur l'unité -> shell (initramfs). D'où le miroir des features de la
+# source au mkfs (`parse_ext_features`) + le contrôle d'audit.
+RISKY_EXT_FEATURES = frozenset({"orphan_file", "metadata_csum_seed"})
+
+
+def parse_ext_features(dumpe2fs_output):
+    """Ensemble des features d'un fs ext* d'après la sortie de `dumpe2fs -h`
+    (ou `tune2fs -l`) : la ligne « Filesystem features: … ». Ensemble vide si
+    absente (sortie tronquée, fs non-ext)."""
+    m = re.search(r"(?mi)^Filesystem features:\s*(.+)$", dumpe2fs_output or "")
+    return set(m.group(1).split()) if m else set()
 
 
 def storage_modules():

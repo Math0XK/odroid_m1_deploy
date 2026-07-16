@@ -81,6 +81,16 @@ sudo odroid-station check                                       # GO/NO-GO sur l
 
 Points notables :
 
+- **Audit de boot automatique** : chaque clonage/restauration se termine par un
+  GO/NO-GO vérifié SUR le clone (CRC du `boot.scr`, `root=` résolu vers un UUID
+  qui existe vraiment, `cma=128M` présent, fstab cohérent, kernel+initrd
+  présents, configs flash-kernel assainies, features ext compatibles avec le
+  noyau 5.10 de l'unité). Un NO-GO fait **échouer** l'opération : un disque qui
+  ne trouverait pas sa racine au boot n'est jamais déclaré réussi.
+- **Journal structuré** : étapes numérotées (« ÉTAPE 3/10 — Formatage… »),
+  succès en vert, avertissements en orange, erreurs en rouge, récapitulatif
+  final — dans la GUI (bandeau d'état + journal en couleurs) comme en CLI
+  (préfixes ✔/⚠/✖, couleurs ANSI).
 - **Image compacte** : `image` (ou destination « Fichier image compact » dans
   l'onglet Clone / Image) produit une image **taillée sur l'espace UTILISÉ** de
   la racine, pas sur la capacité du disque — un NVMe 128 Go rempli à 20 % donne
@@ -123,7 +133,10 @@ odroid_m1_deploy/
     spi_panel.py            onglet SPI (golden / flash flotte / env)
     clone_core.py           logique pure du clonage (testée)
     clone_engine.py         MOTEUR clonage à froid + image compacte + restore
-                             partclone (sans UI)
+                             partclone (sans UI), audit de boot intégré
+    boot_audit.py           audit de bootabilité du clone (GO/NO-GO, testé)
+    report.py               journal structuré partagé GUI/CLI (niveaux, étapes)
+    ui_widgets.py           briques GUI communes (bandeau d'état, journal couleurs)
     clone_panel.py          onglet Clone / Image
     verify_panel.py         onglet Vérification
     check_deploy.py         contrôles GO/NO-GO (module partagé onglet/CLI)

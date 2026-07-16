@@ -5,55 +5,38 @@ disque Odroid (ou d'une image) vers un disque cible, OU création d'une image
 disque COMPACTE servant ensuite de source de clonage.
 
 `ClonePanel` est un `ttk.Frame` embarquable, monté comme onglet par `station.py`
-(entrée unique GUI + CLI). Le MOTEUR (montages, rsync, identité, initramfs…) vit
-dans `clone_engine.CloneEngine`, partagé avec les sous-commandes CLI
-`station.py clone` / `station.py image` (SSH sans X11) : même code, mêmes
-garde-fous des deux côtés.
+(entrée unique GUI + CLI). Le MOTEUR (montages, rsync, identité, initramfs,
+audit de boot…) vit dans `clone_engine.CloneEngine`, partagé avec les
+sous-commandes CLI `station.py clone` / `station.py image` (SSH sans X11) :
+même code, mêmes garde-fous des deux côtés.
+
+INTERFACE (refonte) : trois sections numérotées (Source, Destination, Lancer),
+un BANDEAU D'ÉTAT toujours visible (préparation / étape en cours / GO / échec),
+une barre de progression avec l'étape courante et le temps écoulé, et un
+JOURNAL EN COULEURS alimenté par les niveaux du `report.Reporter` (étapes en
+gras, succès en vert, avertissements en orange, erreurs en rouge). Le disque
+système n'apparaît JAMAIS dans la liste des destinations.
 
 SOURCE — trois façons (À FROID uniquement : le disque système en marche est
-toujours refusé en source) :
-  - disque physique à FROID (défaut) : l'Odroid source éteint, sa carte/eMMC/NVMe
-    branché en lecteur USB. La source est remontée read-only : instantané figé,
-    le chemin recommandé pour un master de flotte ;
-  - fichier image (.img) : monté en loop device (typiquement une image compacte
-    produite ici même) ;
-  - sauvegarde partclone (dossier) : table `.sfdisk` + une image `.pc` par
-    partition (type Clonezilla) ; restaurée via `partclone.restore` avec la même
-    identité neuve / réécriture fstab-boot.scr / initramfs que le clonage disque.
-
-DESTINATION — deux façons :
-  - disque physique (sera EFFACÉ) : le clonage classique ;
-  - fichier image COMPACT (.img) : même pipeline, mais vers un fichier attaché
-    en loop device et DIMENSIONNÉ sur l'espace UTILISÉ de la racine source (pas
-    la capacité du disque — un NVMe 128 Go rempli à 20 % donne ~30 Go), sparse
-    de surcroît. Au clonage depuis cette image, la racine est ré-étendue à la
-    taille de la vraie cible.
-
-MODE DE BOOT (explicite, jamais déduit du contenu du disque) :
-  - « SPI » (DÉFAUT, toute la flotte) : le bootloader (idbloader-spi + u-boot
-    Armbian) vit dans la PUCE SPI de la carte, pas sur le disque. Le clone ne
-    bootera que sur une carte dont la SPI porte le golden (onglet SPI) ;
-  - « Disque » (legacy eMMC/SD auto-bootable, hors flotte) : recopie la ZONE
-    BOOTLOADER BRUTE (dd, secteurs 64 -> début p1) et vérifie le secteur 64.
-
-Ce que fait le clone dans tous les cas : mêmes types de fs que la source,
-IDENTITÉ NEUVE (UUID/PARTUUID frais), fstab + config bootloader + `boot.scr`
-(CRC recalculés) réécrits vers cette identité, initramfs reconstruit (hôte ARM64
-requis, sinon sauté avec avertissement), dernière partition étendue à la
-destination. Voir le docstring de `clone_engine.py` pour le COMMENT.
-
-Support de boot séparé (option, LEGACY) : uniquement pour un SSD USB-SATA (pont
-UAS que le stack USB d'u-boot ne pilote pas). Ne PAS cocher pour un NVMe.
+toujours refusé en source) : disque physique branché en USB (Odroid source
+éteint), fichier image .img (loop device), ou sauvegarde partclone (dossier
+.sfdisk + .pc). DESTINATION — disque physique (EFFACÉ) ou fichier image
+compact. MODE DE BOOT explicite : « SPI » (défaut flotte) ou « disque »
+(legacy). Voir les docstrings de `clone_engine.py` pour le POURQUOI des étapes.
 """
 
 import os
 import queue
 import threading
+import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox
 
-from clone_core import find_partclone_bundle, list_block_devices
+from clone_core import (disk_display_label, find_partclone_bundle,
+                        list_block_devices)
 from clone_engine import CloneEngine, assert_not_system_disk
+from report import Reporter
+from ui_widgets import LogView, StatusBanner, hint, section
 
 
 class ClonePanel(ttk.Frame):
@@ -68,6 +51,7 @@ class ClonePanel(ttk.Frame):
         self._boot_medium = None      # disque de boot séparé (option), sinon None
         self._boot_mode_val = "spi"   # mode de boot capturé au lancement du clone
         self._ui_queue = queue.Queue()  # thread de travail -> UI (Tk n'est pas thread-safe)
+        self._busy_since = None
 
         self._build_ui()
         self.after(100, self._pump_ui_queue)
@@ -75,69 +59,60 @@ class ClonePanel(ttk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 6}
-
-        # --- Source ---
-        src_frame = ttk.LabelFrame(self, text="Source")
-        src_frame.pack(fill="x", **pad)
-
+        # --- 1 · Source ---
+        src_frame = section(self, "1 · Source (lue seulement, jamais modifiée)")
         self.src_mode = tk.StringVar(value="disk")
-        ttk.Radiobutton(src_frame, text="Disque physique", variable=self.src_mode,
-                        value="disk", command=self._toggle_src).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(src_frame, text="Fichier image (.img)", variable=self.src_mode,
-                        value="image", command=self._toggle_src).grid(row=0, column=1, sticky="w")
-        ttk.Radiobutton(src_frame, text="Sauvegarde partclone (dossier)",
-                        variable=self.src_mode, value="bundle",
-                        command=self._toggle_src).grid(row=0, column=2, sticky="w")
+        radios = ttk.Frame(src_frame)
+        radios.pack(fill="x", padx=4)
+        for text, val in (("Disque physique", "disk"),
+                          ("Fichier image (.img)", "image"),
+                          ("Sauvegarde partclone (dossier)", "bundle")):
+            ttk.Radiobutton(radios, text=text, variable=self.src_mode,
+                            value=val, command=self._toggle_src).pack(
+                side="left", padx=(0, 18))
 
-        self.src_disk_combo = ttk.Combobox(src_frame, width=60, state="readonly")
-        self.src_disk_combo.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
+        self.src_row = ttk.Frame(src_frame)
+        self.src_row.pack(fill="x", padx=4, pady=4)
+        self.src_disk_combo = ttk.Combobox(self.src_row, state="readonly")
+        self.src_image_entry = ttk.Entry(self.src_row)
+        self.src_image_btn = ttk.Button(self.src_row, text="Parcourir…",
+                                        command=self._browse_image)
+        hint(src_frame, "Clone à FROID uniquement : éteins l'Odroid source et "
+                        "branche sa carte/eMMC/NVMe en lecteur USB. Le disque "
+                        "système de CE poste est refusé automatiquement.")
 
-        self.src_image_entry = ttk.Entry(src_frame, width=50)
-        self.src_image_btn = ttk.Button(src_frame, text="Parcourir...", command=self._browse_image)
-        # placés/masqués dynamiquement par _toggle_src
-
-        ttk.Label(src_frame, foreground="#666",
-                  text="Clone à FROID uniquement : le disque système en marche est "
-                       "refusé en source (éteins l'Odroid, branche sa carte en USB).").grid(
-            row=2, column=0, columnspan=3, sticky="w", padx=4, pady=(6, 0))
-
-        # --- Destination ---
-        dst_frame = ttk.LabelFrame(self, text="Destination")
-        dst_frame.pack(fill="x", **pad)
-
-        # Disque physique (clonage, destination EFFACÉE) ou fichier image
-        # COMPACT (taillé sur l'espace UTILISÉ de la source, sparse — future
-        # source de clonage via « Fichier image » côté Source).
+        # --- 2 · Destination ---
+        dst_frame = section(self, "2 · Destination")
         self.dst_mode = tk.StringVar(value="disk")
-        ttk.Radiobutton(dst_frame, text="Disque physique (sera EFFACÉ)",
+        dradios = ttk.Frame(dst_frame)
+        dradios.pack(fill="x", padx=4)
+        ttk.Radiobutton(dradios, text="Disque physique — sera EFFACÉ",
                         variable=self.dst_mode, value="disk",
-                        command=self._toggle_dst).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(dst_frame, text="Fichier image compact (.img) — source de clonage",
+                        command=self._toggle_dst).pack(side="left", padx=(0, 18))
+        ttk.Radiobutton(dradios, text="Fichier image compact (.img) — future source de clonage",
                         variable=self.dst_mode, value="image",
-                        command=self._toggle_dst).grid(row=0, column=1, sticky="w")
+                        command=self._toggle_dst).pack(side="left")
 
-        self.dst_combo = ttk.Combobox(dst_frame, width=60, state="readonly")
-        self.dst_combo.grid(row=1, column=0, columnspan=2, sticky="we", padx=4, pady=4)
-
-        self.dst_image_entry = ttk.Entry(dst_frame, width=50)
-        self.dst_image_btn = ttk.Button(dst_frame, text="Parcourir...",
+        self.dst_row = ttk.Frame(dst_frame)
+        self.dst_row.pack(fill="x", padx=4, pady=4)
+        self.dst_combo = ttk.Combobox(self.dst_row, state="readonly")
+        self.dst_image_entry = ttk.Entry(self.dst_row)
+        self.dst_image_btn = ttk.Button(self.dst_row, text="Parcourir…",
                                         command=self._browse_dst_image)
-        # placés/masqués dynamiquement par _toggle_dst
 
         # Mode de boot EXPLICITE (jamais déduit du contenu du disque : un
         # idbloader résiduel sur le NVMe master ne le rend pas auto-bootable).
         self.boot_mode = tk.StringVar(value="spi")
-        ttk.Label(dst_frame, text="Mode de boot de la cible :").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
         ttk.Radiobutton(
             dst_frame, variable=self.boot_mode, value="spi",
-            text="SPI (défaut, flotte) — u-boot en puce SPI, le NVMe boote seul",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=16)
+            text="Boot SPI (défaut, toute la flotte) — u-boot vit dans la puce "
+                 "SPI, le NVMe boote seul",
+        ).pack(anchor="w", padx=16)
         ttk.Radiobutton(
             dst_frame, variable=self.boot_mode, value="disk",
-            text="Disque (legacy eMMC/SD auto-bootable) — recopie idbloader/u-boot",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=16)
+            text="Boot disque (legacy eMMC/SD auto-bootable) — recopie "
+                 "idbloader/u-boot sur le disque",
+        ).pack(anchor="w", padx=16)
 
         # Support de boot séparé (LEGACY) : uniquement un SSD USB-SATA (pont UAS
         # qu'u-boot ne pilote pas). Un NVMe boote seul via la SPI -> ne PAS cocher.
@@ -146,31 +121,35 @@ class ClonePanel(ttk.Frame):
             dst_frame, variable=self.var_bootmedium, command=self._toggle_bootmedium,
             text="(Legacy) SSD USB-SATA seulement : préparer un support de boot "
                  "séparé (USB/SD, sera EFFACÉ). Inutile pour un NVMe.")
-        self.bootmedium_check.grid(row=5, column=0, columnspan=2, sticky="w",
-                                   padx=4, pady=(6, 0))
-        self.bootmedium_combo = ttk.Combobox(dst_frame, width=60, state="disabled")
-        self.bootmedium_combo.grid(row=6, column=0, columnspan=2, sticky="we",
-                                   padx=4, pady=4)
+        self.bootmedium_check.pack(anchor="w", padx=4, pady=(6, 0))
+        self.bootmedium_combo = ttk.Combobox(dst_frame, state="disabled")
+        self.bootmedium_combo.pack(fill="x", padx=4, pady=(2, 6))
 
-        ttk.Button(self, text="Rafraîchir la liste des disques",
-                   command=self.refresh_disks).pack(**pad)
+        # --- 3 · Lancement ---
+        act = section(self, "3 · Lancer")
+        arow = ttk.Frame(act)
+        arow.pack(fill="x", padx=4, pady=4)
+        ttk.Button(arow, text="↻  Rafraîchir les disques",
+                   command=self.refresh_disks).pack(side="left")
+        self.clone_btn = ttk.Button(arow, text="▶  LANCER LE CLONAGE",
+                                    command=self._on_clone)
+        self.clone_btn.pack(side="right")
 
-        # --- Bouton clonage ---
-        self.clone_btn = ttk.Button(self, text="Lancer le clonage", command=self._on_clone)
-        self.clone_btn.pack(**pad)
+        # --- Bandeau d'état + progression ---
+        self.banner = StatusBanner(self)
+        self.banner.pack(fill="x", padx=10, pady=(4, 0))
 
-        # --- Progression ---
         prog_frame = ttk.Frame(self)
-        prog_frame.pack(fill="x", padx=8)
+        prog_frame.pack(fill="x", padx=10, pady=(4, 0))
         self.progress = ttk.Progressbar(prog_frame, mode="determinate", maximum=100.0)
         self.progress.pack(side="left", fill="x", expand=True)
-        self.progress_label = ttk.Label(prog_frame, text="", width=28, anchor="w")
-        self.progress_label.pack(side="left", padx=6)
+        self.progress_label = ttk.Label(prog_frame, text="", width=34, anchor="w")
+        self.progress_label.pack(side="left", padx=8)
 
-        # --- Log ---
-        log_frame = ttk.LabelFrame(self, text="Journal")
-        log_frame.pack(fill="both", expand=True, **pad)
-        self.log = scrolledtext.ScrolledText(log_frame, height=18, state="disabled")
+        # --- Journal ---
+        log_frame = ttk.LabelFrame(self, text=" Journal détaillé ")
+        log_frame.pack(fill="both", expand=True, padx=10, pady=6)
+        self.log = LogView(log_frame, height=16)
         self.log.pack(fill="both", expand=True)
 
         self._toggle_src()
@@ -181,34 +160,31 @@ class ClonePanel(ttk.Frame):
             state="readonly" if self.var_bootmedium.get() else "disabled")
 
     def _toggle_src(self):
+        for w in (self.src_disk_combo, self.src_image_entry, self.src_image_btn):
+            w.pack_forget()
         if self.src_mode.get() == "disk":
-            self.src_image_entry.grid_forget()
-            self.src_image_btn.grid_forget()
-            self.src_disk_combo.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
+            self.src_disk_combo.pack(fill="x", expand=True)
         else:
-            self.src_disk_combo.grid_forget()
-            self.src_image_entry.grid(row=1, column=0, columnspan=2, sticky="we", padx=4, pady=4)
-            self.src_image_btn.grid(row=1, column=2, sticky="w", padx=4, pady=4)
+            self.src_image_entry.pack(side="left", fill="x", expand=True)
+            self.src_image_btn.pack(side="left", padx=(6, 0))
 
     def _toggle_dst(self):
+        for w in (self.dst_combo, self.dst_image_entry, self.dst_image_btn):
+            w.pack_forget()
         if self.dst_mode.get() == "disk":
-            self.dst_image_entry.grid_forget()
-            self.dst_image_btn.grid_forget()
-            self.dst_combo.grid(row=1, column=0, columnspan=2, sticky="we",
-                                padx=4, pady=4)
+            self.dst_combo.pack(fill="x", expand=True)
             self.bootmedium_check.configure(state="normal")
             self._toggle_bootmedium()
-            self.clone_btn.configure(text="Lancer le clonage")
+            self.clone_btn.configure(text="▶  LANCER LE CLONAGE")
         else:
             # destination = fichier image : pas de support de boot séparé
             # (on n'écrit aucun disque), case décochée et grisée.
-            self.dst_combo.grid_forget()
-            self.dst_image_entry.grid(row=1, column=0, sticky="we", padx=4, pady=4)
-            self.dst_image_btn.grid(row=1, column=1, sticky="w", padx=4, pady=4)
+            self.dst_image_entry.pack(side="left", fill="x", expand=True)
+            self.dst_image_btn.pack(side="left", padx=(6, 0))
             self.var_bootmedium.set(False)
             self.bootmedium_check.configure(state="disabled")
             self.bootmedium_combo.configure(state="disabled")
-            self.clone_btn.configure(text="Créer l'image compacte")
+            self.clone_btn.configure(text="▶  CRÉER L'IMAGE COMPACTE")
 
     def _browse_image(self):
         if self.src_mode.get() == "bundle":
@@ -236,32 +212,44 @@ class ClonePanel(ttk.Frame):
             while True:
                 kind, payload = self._ui_queue.get_nowait()
                 if kind == "log":
-                    self.log.configure(state="normal")
-                    self.log.insert(tk.END, payload + "\n")
-                    self.log.see(tk.END)
-                    self.log.configure(state="disabled")
+                    level, text = payload
+                    self.log.write(level, text)
+                    if level == "step":
+                        self.banner.set_state("busy", text)
                 elif kind == "progress":
                     pct, text = payload
                     self.progress["value"] = pct
-                    self.progress_label.config(text=text)
+                    self.progress_label.config(text=self._with_elapsed(text))
                 elif kind == "done":
+                    self._busy_since = None
                     self.clone_btn.config(state="normal")
                     self.progress["value"] = 100.0
                     self.progress_label.config(text="Terminé ✔")
-                    messagebox.showinfo("Terminé", payload)
+                    self.banner.set_state("ok", "TERMINÉ — audit de boot : GO ✔")
+                    messagebox.showinfo("Terminé — GO", payload)
                 elif kind == "error":
+                    self._busy_since = None
                     self.clone_btn.config(state="normal")
-                    self.progress_label.config(text="Erreur ✖")
-                    messagebox.showerror("Erreur", payload)
+                    self.progress_label.config(text="Échec ✖")
+                    self.banner.set_state("error", "ÉCHEC — voir le journal "
+                                                   "(le disque n'est PAS déployable)")
+                    messagebox.showerror("Échec", payload)
         except queue.Empty:
             pass
         self.after(100, self._pump_ui_queue)
 
-    def log_write(self, text):
-        self._ui_queue.put(("log", text))
+    def _with_elapsed(self, text):
+        if self._busy_since is None:
+            return text
+        mins, secs = divmod(int(time.monotonic() - self._busy_since), 60)
+        return f"{text}   ({mins:d} min {secs:02d} s)"
 
-    def _set_progress(self, pct, text):
-        self._ui_queue.put(("progress", (pct, text)))
+    def _make_reporter(self):
+        """Reporter dont le sink/progress postent dans la queue UI (les
+        moteurs tournent dans un thread de travail)."""
+        return Reporter(
+            sink=lambda level, text: self._ui_queue.put(("log", (level, text))),
+            progress=lambda pct, text: self._ui_queue.put(("progress", (pct, text))))
 
     # ---------- Data ----------
     def refresh_disks(self):
@@ -270,18 +258,22 @@ class ClonePanel(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Erreur", str(e))
             return
-        labels = []
         self._disks = {}
+        src_labels, dst_labels = [], []
         for d in disks:
-            label = f"{d['path']}  ({d['size']}, {d['model']})"
-            if d["system"]:
-                label += "  [disque système]"
-            labels.append(label)
+            label = disk_display_label(d)
             self._disks[label] = d["path"]
-        self.src_disk_combo["values"] = labels
-        self.dst_combo["values"] = labels
-        self.bootmedium_combo["values"] = labels
-        self.log_write(f"{len(disks)} disque(s) détecté(s).")
+            src_labels.append(label)
+            if not d["system"]:
+                # le disque système n'est JAMAIS proposé en destination : il
+                # serait refusé de toute façon (assert_not_system_disk), autant
+                # ne pas le rendre sélectionnable.
+                dst_labels.append(label)
+        self.src_disk_combo["values"] = src_labels
+        self.dst_combo["values"] = dst_labels
+        self.bootmedium_combo["values"] = dst_labels
+        self.log.write("info", f"{len(disks)} disque(s) détecté(s) — "
+                               f"{len(dst_labels)} éligible(s) en destination.")
 
     # ---------- Sélections communes ----------
     def _selected_source(self):
@@ -366,19 +358,17 @@ class ClonePanel(ttk.Frame):
             messagebox.showerror("Erreur", str(e))
             return
 
-        efface = f"EFFACER TOUT LE CONTENU de {dst_disk}"
+        efface = f"EFFACER TOUT LE CONTENU de :\n\n    {dst_label}"
         if boot_medium:
-            efface += f"\nET de {boot_medium} (support de boot)"
-        if not messagebox.askyesno("Confirmation", f"Ceci va {efface}.\n\nContinuer ?"):
+            efface += f"\n    {boot_medium} (support de boot)"
+        if not messagebox.askyesno("Confirmation",
+                                   f"Ceci va {efface}\n\nContinuer ?"):
             return
 
         self._boot_medium = boot_medium
         # Capturés ici (thread principal) : le worker ne doit pas lire une Tk var.
         self._boot_mode_val = self.boot_mode.get()
-        self.clone_btn.config(state="disabled")
-        threading.Thread(target=self._clone_worker,
-                         args=(src_disk, dst_disk, img_path),
-                         daemon=True).start()
+        self._start_worker(self._clone_worker, src_disk, dst_disk, img_path)
 
     def _on_make_image(self):
         if self.src_mode.get() != "disk":
@@ -410,13 +400,19 @@ class ClonePanel(ttk.Frame):
             return
 
         self._boot_mode_val = self.boot_mode.get()
+        self._start_worker(self._image_worker, src_disk, out_path)
+
+    def _start_worker(self, target, *args):
+        self.log.clear()
+        self.banner.set_state("busy", "Démarrage…")
+        self.progress["value"] = 0
+        self._busy_since = time.monotonic()
         self.clone_btn.config(state="disabled")
-        threading.Thread(target=self._image_worker, args=(src_disk, out_path),
-                         daemon=True).start()
+        threading.Thread(target=target, args=args, daemon=True).start()
 
     # ---------- Workers ----------
     def _clone_worker(self, src_disk, dst_disk, img_path):
-        engine = CloneEngine(log=self.log_write, progress=self._set_progress,
+        engine = CloneEngine(self._make_reporter(),
                              boot_mode=self._boot_mode_val,
                              boot_medium=self._boot_medium)
         try:
@@ -427,15 +423,14 @@ class ClonePanel(ttk.Frame):
                 msg = engine.clone(src_disk, dst_disk, img_path=img_path)
             self._ui_queue.put(("done", msg))
         except Exception as e:
-            self.log_write(f"\n=== ERREUR ===\n{e}")
+            self._ui_queue.put(("log", ("error", f"ARRÊT SUR ERREUR :\n{e}")))
             self._ui_queue.put(("error", str(e)))
 
     def _image_worker(self, src_disk, out_path):
-        engine = CloneEngine(log=self.log_write, progress=self._set_progress,
-                             boot_mode=self._boot_mode_val)
+        engine = CloneEngine(self._make_reporter(), boot_mode=self._boot_mode_val)
         try:
             msg = engine.make_image(src_disk, out_path)
             self._ui_queue.put(("done", msg))
         except Exception as e:
-            self.log_write(f"\n=== ERREUR ===\n{e}")
+            self._ui_queue.put(("log", ("error", f"ARRÊT SUR ERREUR :\n{e}")))
             self._ui_queue.put(("error", str(e)))

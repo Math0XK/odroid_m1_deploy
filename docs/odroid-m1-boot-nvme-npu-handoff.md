@@ -141,6 +141,16 @@ qu'il s'agisse de l'UUID du filesystem interne vs celui de la partition, ou rés
 d'un ancien fix ; à confirmer avant toute opération de clonage pour éviter de
 reproduire une image avec un mauvais root UUID).
 
+> **RÉSOLU (07/2026)** : l'UUID fantôme `eee2b90d…` est un résidu d'un ancien
+> filesystem dans la **config flash-kernel du master** (`/etc/default/flash-kernel`
+> et/ou `/etc/flash-kernel/`). Chaque `update-initramfs` déclenche le hook
+> flash-kernel qui régénère `/boot/boot.scr` depuis cette config — c'est ce qui a
+> rendu un clone non bootable (le chroot du clonage régénérait un `boot.scr`
+> pointant sur l'UUID fantôme, APRÈS la réécriture d'identité). Corrigé dans le
+> moteur de clonage (réécriture des configs de régénération + re-contrôle +
+> audit de boot final) ; à assainir aussi sur le master — voir
+> `DEPLOIEMENT_FLOTTE.md` §4a et §9.
+
 ---
 
 ## Tâche pour Claude Code

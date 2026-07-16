@@ -41,8 +41,10 @@ import argparse
 import os
 import sys
 
-from clone_core import find_partclone_bundle, list_block_devices
+from clone_core import (disk_display_label, find_partclone_bundle,
+                        list_block_devices)
 from clone_engine import CloneEngine, assert_not_system_disk
+from report import Reporter, console_sink
 from spi_ops import SpiOps
 import check_deploy
 
@@ -160,8 +162,7 @@ def print_disks():
         return
     print("Disques détectés :")
     for d in disks:
-        suffix = "  [disque système]" if d["system"] else ""
-        print(f"  {d['path']:<16} {d['size']:>8}  {d['model']}{suffix}")
+        print(f"  {disk_display_label(d)}")
 
 
 def confirm_destruction(dst_disk, boot_medium):
@@ -228,8 +229,9 @@ def cmd_clone(args, p):
         print("Annulé (confirmation refusée).")
         return 1
 
-    engine = CloneEngine(log=print, progress=ProgressPrinter(),
-                         boot_mode=args.boot_mode, boot_medium=args.boot_medium)
+    reporter = Reporter(console_sink(), progress=ProgressPrinter())
+    engine = CloneEngine(reporter, boot_mode=args.boot_mode,
+                         boot_medium=args.boot_medium)
     try:
         if bundle is not None:
             msg = engine.restore_bundle(bundle, args.dest)
@@ -249,8 +251,8 @@ def cmd_image(args, p):
             print("Annulé (confirmation refusée).")
             return 1
 
-    engine = CloneEngine(log=print, progress=ProgressPrinter(),
-                         boot_mode=args.boot_mode)
+    reporter = Reporter(console_sink(), progress=ProgressPrinter())
+    engine = CloneEngine(reporter, boot_mode=args.boot_mode)
     try:
         msg = engine.make_image(args.source, args.out)
     except Exception as e:
@@ -261,7 +263,7 @@ def cmd_image(args, p):
 
 
 def cmd_spi(args, p):
-    ops = SpiOps(log=print, golden_dir=GOLDEN_DIR, sim=args.sim)
+    ops = SpiOps(Reporter(console_sink()), golden_dir=GOLDEN_DIR, sim=args.sim)
     golden = args.file
 
     if args.spi_cmd == "read":
@@ -316,10 +318,12 @@ def cmd_spi(args, p):
 
 
 def cmd_check(args, _p):
+    sink = console_sink()
     results, go = check_deploy.run_checks(npu_cmd=args.npu_cmd)
     for name, ok, msg in results:
-        print(f"[{'OK ' if ok else 'NON'}] {name} : {msg}")
-    print(f"\n=== {'GO' if go else 'NO-GO'} ===")
+        sink("ok" if ok else "error", f"{name} : {msg}")
+    sink("step", "Verdict : GO ✔ — unité déployable" if go
+         else "Verdict : NO-GO ✖ — voir les contrôles en échec")
     return 0 if go else 1
 
 

@@ -126,17 +126,24 @@ bouton **« Sauver l'env (fw_printenv) »** (ou `sudo fw_printenv`).
 
 Deux vérifs à faire une fois, sur le master, pour ne pas propager un défaut :
 
-**a) Divergence UUID du `boot.scr`.** La racine y est désignée par un UUID qui doit
-correspondre à la vraie partition NVMe :
+**a) Divergence UUID du `boot.scr` — origine identifiée (07/2026).** La racine y
+est désignée par un UUID qui doit correspondre à la vraie partition NVMe :
 ```bash
 sudo strings /boot/boot.scr | grep -oE 'root=(UUID|PARTUUID)=[0-9a-fA-F-]+'
-lsblk -o NAME,UUID,PARTUUID /dev/nvme0n1     # comparer
+grep -o 'root=[^" ]*' /etc/default/flash-kernel     # la CONFIG de régénération
+lsblk -o NAME,UUID,PARTUUID /dev/nvme0n1            # comparer
 ```
-Si l'UUID du `boot.scr` **diffère** de celui de `nvme0n1p2` (cas connu :
-`eee2b90d…` vs `a9bdb4f9…`), le master boote peut-être « par coïncidence ».
-Le moteur de clonage rend ça inoffensif pour le **clone** (il remappe cet
-identifiant vers l'identité neuve, cf. `extract_root_ids`), mais clarifier l'origine
-sur le master évite de perpétuer une config bancale.
+Le fameux UUID fantôme (`eee2b90d…` vs `a9bdb4f9…` réel) vit dans la **config
+flash-kernel du master** (`/etc/default/flash-kernel` et/ou `/etc/flash-kernel/`),
+résidu d'un ancien filesystem : chaque `update-initramfs` déclenche flash-kernel,
+qui **régénère `/boot/boot.scr` depuis cette config**. Le master boote parce que
+son `boot.scr` fait main n'a jamais été régénéré — mais le premier
+`update-initramfs` (mise à jour de kernel, ou chroot de clonage) réécrit un
+`boot.scr` pointant sur l'UUID fantôme -> shell `(initramfs)`. Le moteur de
+clonage réécrit maintenant AUSSI ces configs sur le clone et l'audit final le
+vérifie, mais il faut **assainir le master** : corriger le `root=UUID` dans
+`/etc/default/flash-kernel` vers l'UUID réel de `nvme0n1p2` (et y garder
+`cma=128M` dans la cmdline).
 
 **b) MAC figée (`ethaddr`).** Flasher l'**image complète** propage l'env, donc une
 `ethaddr` sauvegardée → **même MAC sur toute la flotte** :
@@ -221,8 +228,16 @@ sudo odroid-station clone --image images/nvme/odroid_m1_nvme.img --dest /dev/nvm
 sudo odroid-station clone --image images/nvme --dest /dev/nvme0n1   # bundle partclone (dossier)
 ```
 - **Mode de boot = « SPI »** (défaut) : le clone reçoit une identité neuve
-  (UUID/PARTUUID), fstab + `boot.scr` (CRC recalculés, `cma=128M` préservé) + initramfs
-  réécrits ; la zone bootloader du disque est ignorée (le boot vient de la SPI).
+  (UUID/PARTUUID), fstab + `boot.scr` (CRC recalculés, `cma=128M` préservé) +
+  **configs flash-kernel** + initramfs réécrits ; la zone bootloader du disque
+  est ignorée (le boot vient de la SPI).
+- Le formatage **reprend les features ext de la source** (un mkfs récent
+  activerait `orphan_file`/`metadata_csum_seed`, que le noyau 5.10 de l'unité
+  peut refuser au montage).
+- **Audit de boot automatique en fin de clone** (GO/NO-GO) : CRC du `boot.scr`,
+  `root=` résolu sur le clone, `cma=128M` présent, fstab cohérent, kernel+initrd
+  présents, configs de régénération assainies, features ext compatibles. Un
+  NO-GO fait ÉCHOUER le clonage : le disque ne part pas en prod.
 - Un idbloader résiduel sur la source est signalé **sans effet**.
 - Reconstruire l'initramfs **sur l'ODROID** (ARM64) si le clone a tourné sur un PC x86.
 
@@ -273,6 +288,16 @@ inférence NPU < 100 ms. Tous OK → **GO**.
 
 ## 9. Pièges connus (issus de la mise au point)
 
+- **`update-initramfs` régénère `boot.scr` via flash-kernel (cause d'un clone
+  non bootable, 07/2026).** Sur l'image Hardkernel, le hook flash-kernel
+  d'`update-initramfs` régénère `/boot/boot.scr` depuis
+  `/etc/default/flash-kernel` — en ÉCRASANT un `boot.scr` corrigé à la main.
+  Si cette config porte un `root=UUID` périmé (cas du master, voir §4a) ou pas
+  de `cma=128M`, le système suivant ce `update-initramfs` tombe en shell
+  `(initramfs)` ou perd le NPU. Le moteur de clonage gère ça (réécriture des
+  configs AVANT le chroot, re-contrôle et restauration du `boot.scr` connu-bon
+  APRÈS, audit final) ; sur une unité en marche, après toute mise à jour de
+  kernel, vérifier `strings /boot/boot.scr | grep root=`.
 - **`boot.scr` : ne jamais round-tripper via `dumpimage`.** `dumpimage … -o x.cmd` →
   `sed` → `mkimage … x.cmd boot.scr` produit un script qui échoue silencieusement
   (`SCRIPT FAILED`). **Toujours écrire le `.cmd` à la main (heredoc), puis compiler :**

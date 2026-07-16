@@ -9,8 +9,9 @@ golden (taille/signature/manifeste SHA256), sauvegarde pré-flash systématique,
 avertissement `ethaddr` (MAC figée). Sur le même principe que
 `clone_engine.CloneEngine` pour le clonage : pas de duplication GUI/CLI.
 
-`log` reçoit chaque ligne de journal ; `sim=True` journalise les commandes
-exactes sans RIEN exécuter (revue de sécurité, sans matériel).
+`reporter` est un `report.Reporter` (journal structuré, mêmes niveaux que le
+clonage) ; `sim=True` journalise les commandes exactes sans RIEN exécuter
+(revue de sécurité, sans matériel).
 
 S'utilise À LA PINCE CH341A (programmer `ch341a_spi`, carte hors tension) :
 lecture du golden sur le master, flash de la flotte. La lecture/flash on-device
@@ -39,10 +40,10 @@ def sha_sidecar(golden):
 
 
 class SpiOps:
-    """Une campagne d'opérations SPI = une instance (log + simulation figés)."""
+    """Une campagne d'opérations SPI = une instance (reporter + simulation figés)."""
 
-    def __init__(self, log, golden_dir, sim=False):
-        self.log = log
+    def __init__(self, reporter, golden_dir, sim=False):
+        self.r = reporter
         self.golden_dir = golden_dir
         self.sim = sim
 
@@ -55,9 +56,9 @@ class SpiOps:
         """
         pretty = " ".join(shlex.quote(a) for a in argv)
         if self.sim:
-            self.log(f"[SIMULATION] {pretty}")
+            self.r.cmd(f"[SIMULATION] {pretty}")
             return 0, ""
-        self.log(f"$ {pretty}")
+        self.r.cmd(pretty)
         try:
             r = subprocess.run(argv, capture_output=True, text=True)
         except FileNotFoundError:
@@ -66,7 +67,7 @@ class SpiOps:
         out = (r.stdout or "") + (r.stderr or "")
         tail = "\n".join(out.splitlines()[-12:])
         if tail:
-            self.log(tail)
+            self.r.detail(tail)
         if r.returncode != 0 and not allow_fail:
             raise RuntimeError(f"Échec (code {r.returncode}) : {pretty}")
         return r.returncode, out
@@ -92,10 +93,11 @@ class SpiOps:
         with open(sha_sidecar(golden), "w", encoding="utf-8") as f:
             f.write(f"{digest}  {os.path.basename(golden)}\n")
         if b"ethaddr=" in data:
-            self.log("⚠ Le golden contient une MAC figée (ethaddr) : flasher "
-                     "l'image complète donnerait la MÊME MAC à toute la flotte. "
-                     "Voir DEPLOIEMENT_FLOTTE.md avant de flasher.")
-        self.log(f"Golden écrit : {golden}\nSHA256 : {digest}")
+            self.r.warn("Le golden contient une MAC figée (ethaddr) : flasher "
+                        "l'image complète donnerait la MÊME MAC à toute la "
+                        "flotte. Voir DEPLOIEMENT_FLOTTE.md avant de flasher.")
+        self.r.ok(f"Golden écrit et validé : {golden}")
+        self.r.detail(f"SHA256 : {digest}")
         return digest
 
     def verify_chip(self, programmer, golden):
@@ -123,10 +125,10 @@ class SpiOps:
             if want.lower() != got.lower():
                 raise RuntimeError("SHA256 du golden != manifeste "
                                    f"({sidecar}). Flash annulé.")
-            self.log("Golden conforme au manifeste SHA256.")
+            self.r.ok("Golden conforme au manifeste SHA256.")
         if b"ethaddr=" in data:
-            self.log("⚠ Golden avec MAC figée (ethaddr) : même MAC sur "
-                     "toute la flotte. Voir DEPLOIEMENT_FLOTTE.md.")
+            self.r.warn("Golden avec MAC figée (ethaddr) : même MAC sur "
+                        "toute la flotte. Voir DEPLOIEMENT_FLOTTE.md.")
 
     def flash_unit(self, programmer, golden):
         """Contrôle le golden, sauvegarde la puce cible, écrit et vérifie
@@ -143,7 +145,8 @@ class SpiOps:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         safe = programmer.replace(":", "_").replace("/", "_")
         backup = os.path.join(bdir, f"preflash_{safe}_{stamp}.bin")
-        self.log("Sauvegarde de la puce cible avant flash…")
+        self.r.info("Sauvegarde de la puce cible avant flash (jamais de flash "
+                    "sans filet)…")
         self.run_cmd(sc.flashrom_cmd("read", programmer, backup))
 
         self.run_cmd(sc.flashrom_cmd("write", programmer, golden))
@@ -171,6 +174,6 @@ class SpiOps:
         with open(path, "w", encoding="utf-8") as f:
             f.write(out)
         if sc.env_has_ethaddr(out):
-            self.log("⚠ ethaddr présent dans l'env : attention aux collisions "
-                     "de MAC si on clone l'image complète sur la flotte.")
+            self.r.warn("ethaddr présent dans l'env : attention aux collisions "
+                        "de MAC si on clone l'image complète sur la flotte.")
         return path

@@ -14,6 +14,8 @@ versionné) et la reflashe sur les autres cartes.
 garde-fous) vivent dans `spi_ops.SpiOps`, partagé avec les sous-commandes CLI
 `station.py spi …` — même code, mêmes garde-fous des deux côtés. La logique pure
 (validation d'image, parsers) est dans `spi_core` (testée sans matériel).
+L'affichage suit la même refonte que l'onglet Clone : bandeau d'état + journal
+en couleurs (`ui_widgets`), niveaux du `report.Reporter`.
 
 Méthode de l'outil : à la PINCE CH341A (clip SOIC-8), carte HORS TENSION
 (`flashrom -p ch341a_spi`) — marche même sur une unité vierge/briquée. Le flash
@@ -29,9 +31,11 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox
 
+from report import Reporter
 from spi_ops import PROGRAMMERS, SpiOps
+from ui_widgets import LogView, StatusBanner, hint, section
 
 
 class SpiPanel(ttk.Frame):
@@ -54,29 +58,13 @@ class SpiPanel(ttk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self, default_golden):
-        pad = {"padx": 8, "pady": 5}
         btn = {"padx": 6, "pady": 4}
 
-        # --- Programmer (unique : pince CH341A ; on-device « à chaud » retiré) ---
-        prog_frame = ttk.LabelFrame(self, text="Programmer (flashrom)")
-        prog_frame.pack(fill="x", **pad)
-        ttk.Label(prog_frame, wraplength=820, justify="left", foreground="#666",
-                  text="Pince CH341A (clip SOIC-8), carte HORS TENSION. Sans "
-                       "pince : flasher depuis le prompt U-Boot avec « sf write » "
-                       "(voir docs/DEPLOIEMENT_FLOTTE.md §5). Le flash SPI depuis "
-                       "Linux n'est pas possible sur cette carte.").pack(
-            anchor="w", padx=8, pady=(6, 0))
-        self.var_sim = tk.BooleanVar(value=False)
-        ttk.Checkbutton(prog_frame, variable=self.var_sim,
-                        text="Mode simulation (n'exécute rien, journalise les "
-                             "commandes)").pack(anchor="w", padx=8, pady=(2, 6))
-
-        # --- 1) Golden ---
-        g_frame = ttk.LabelFrame(self, text="1) Golden — lire / vérifier (16 MiO)")
-        g_frame.pack(fill="x", **pad)
-        row = ttk.Frame(g_frame); row.pack(fill="x")
+        # --- 1 · Golden ---
+        g_frame = section(self, "1 · Golden — lire / vérifier la puce (16 MiO, pince CH341A)")
+        row = ttk.Frame(g_frame); row.pack(fill="x", padx=4)
         ttk.Label(row, text="Fichier :").pack(side="left", padx=4)
-        self.golden_entry = ttk.Entry(row, width=58)
+        self.golden_entry = ttk.Entry(row)
         self.golden_entry.insert(0, default_golden)
         self.golden_entry.pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(row, text="Parcourir…", command=self._browse_golden).pack(side="left", padx=4)
@@ -85,36 +73,45 @@ class SpiPanel(ttk.Frame):
                    command=self._on_read_master).pack(side="left", **btn)
         ttk.Button(brow, text="Vérifier la puce vs golden",
                    command=self._on_verify_chip).pack(side="left", **btn)
+        hint(g_frame, "Pince CH341A (clip SOIC-8), carte HORS TENSION. Sans "
+                      "pince : flasher au prompt U-Boot avec « sf write » "
+                      "(docs/DEPLOIEMENT_FLOTTE.md §5) — le flash SPI depuis "
+                      "Linux n'est pas possible sur cette carte.")
 
-        # --- 2) Flash unité ---
-        f_frame = ttk.LabelFrame(self, text="2) Flasher une unité (EFFACE la SPI)")
-        f_frame.pack(fill="x", **pad)
-        ttk.Label(f_frame, wraplength=780, justify="left",
-                  text="Sauvegarde la puce cible AVANT le flash, contrôle le golden "
-                       "(taille + signature + SHA256), puis écrit et vérifie.").pack(
-            anchor="w", padx=4)
+        # --- 2 · Flash unité ---
+        f_frame = section(self, "2 · Flasher une unité (EFFACE sa puce SPI)")
         ttk.Button(f_frame, text="Flasher cette unité avec le golden",
                    command=self._on_flash_unit).pack(side="left", **btn)
+        hint(f_frame, "Sauvegarde la puce cible AVANT le flash "
+                      "(preflash_backups/), contrôle le golden (taille + "
+                      "signature + SHA256), écrit puis vérifie.")
 
-        # --- 3) Env U-Boot ---
-        e_frame = ttk.LabelFrame(self, text="3) Variables d'env U-Boot (on-device, root)")
-        e_frame.pack(fill="x", **pad)
-        ttk.Label(e_frame, wraplength=780, justify="left",
-                  text="Ré-applique les 4 variables critiques (boot NVMe + régulateur "
-                       "NPU). Inutile après un flash d'image COMPLÈTE (env inclus) ; "
-                       "utile après un reflash de l'env d'origine.").pack(anchor="w", padx=4)
+        # --- 3 · Env U-Boot ---
+        e_frame = section(self, "3 · Variables d'env U-Boot (sur l'unité, root)")
         erow = ttk.Frame(e_frame); erow.pack(fill="x")
         ttk.Button(erow, text="Appliquer les 4 vars d'env",
                    command=self._on_env_apply).pack(side="left", **btn)
         ttk.Button(erow, text="Sauver l'env (fw_printenv)",
                    command=self._on_env_dump).pack(side="left", **btn)
+        hint(e_frame, "Ré-applique les 4 variables critiques (boot NVMe + "
+                      "régulateur NPU). Inutile après un flash d'image "
+                      "COMPLÈTE (env inclus) ; utile après un reflash de "
+                      "l'env d'origine.")
 
-        # --- Activité + journal ---
+        # --- Simulation + état + journal ---
+        self.var_sim = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self, variable=self.var_sim,
+                        text="Mode simulation — n'exécute rien, journalise les "
+                             "commandes exactes").pack(anchor="w", padx=12)
+
+        self.banner = StatusBanner(self)
+        self.banner.pack(fill="x", padx=10, pady=(4, 0))
         self.activity = ttk.Progressbar(self, mode="indeterminate")
-        self.activity.pack(fill="x", padx=8, pady=(4, 0))
-        log_frame = ttk.LabelFrame(self, text="Journal")
-        log_frame.pack(fill="both", expand=True, **pad)
-        self.log = scrolledtext.ScrolledText(log_frame, height=14, state="disabled")
+        self.activity.pack(fill="x", padx=10, pady=(4, 0))
+
+        log_frame = ttk.LabelFrame(self, text=" Journal détaillé ")
+        log_frame.pack(fill="both", expand=True, padx=10, pady=6)
+        self.log = LogView(log_frame, height=12)
         self.log.pack(fill="both", expand=True)
         self._action_buttons = self._collect_buttons(self)
 
@@ -140,27 +137,24 @@ class SpiPanel(ttk.Frame):
             while True:
                 kind, payload = self._ui_queue.get_nowait()
                 if kind == "log":
-                    self.log.configure(state="normal")
-                    self.log.insert(tk.END, payload + "\n")
-                    self.log.see(tk.END)
-                    self.log.configure(state="disabled")
+                    self.log.write(*payload)
                 elif kind == "done":
                     self._busy_stop()
+                    self.banner.set_state("ok", "Terminé ✔")
                     if payload:
                         messagebox.showinfo("Terminé", payload)
                 elif kind == "error":
                     self._busy_stop()
+                    self.banner.set_state("error", "Échec — voir le journal")
                     messagebox.showerror("Erreur", payload)
         except queue.Empty:
             pass
         self.after(100, self._pump_ui_queue)
 
-    def log_write(self, text):
-        self._ui_queue.put(("log", text))
-
     # ---------- État occupé ----------
-    def _busy_start(self):
+    def _busy_start(self, title):
         self._busy = True
+        self.banner.set_state("busy", title)
         for b in self._action_buttons:
             b.config(state="disabled")
         self.activity.start(12)
@@ -171,11 +165,12 @@ class SpiPanel(ttk.Frame):
             b.config(state="normal")
         self._busy = False
 
-    def _start(self, target, *args):
+    def _start(self, title, target, *args):
         """Lance une action en thread (si pas déjà occupé)."""
         if self._busy:
             return
-        self._busy_start()
+        self.log.write("step", title)
+        self._busy_start(title)
         threading.Thread(target=self._guard(target), args=args, daemon=True).start()
 
     def _guard(self, target):
@@ -183,13 +178,15 @@ class SpiPanel(ttk.Frame):
             try:
                 target(*args)
             except Exception as e:                       # filet : jamais de thread muet
-                self.log_write(f"\n=== ERREUR ===\n{e}")
+                self._ui_queue.put(("log", ("error", str(e))))
                 self._ui_queue.put(("error", str(e)))
         return wrapped
 
     def _ops(self):
         """SpiOps frais, avec l'état simulation capturé au lancement de l'action."""
-        return SpiOps(log=self.log_write, golden_dir=self._golden_dir,
+        reporter = Reporter(
+            sink=lambda level, text: self._ui_queue.put(("log", (level, text))))
+        return SpiOps(reporter, golden_dir=self._golden_dir,
                       sim=self.var_sim.get())
 
     def _programmer(self):
@@ -202,8 +199,8 @@ class SpiPanel(ttk.Frame):
         if not golden:
             messagebox.showerror("Erreur", "Renseigne le chemin du golden.")
             return
-        self.log_write(f"\n--- Lecture de la puce ({self._programmer()}) ---")
-        self._start(self._read_master_worker, self._ops(), self._programmer(), golden)
+        self._start(f"Lecture de la puce ({self._programmer()})",
+                    self._read_master_worker, self._ops(), self._programmer(), golden)
 
     def _read_master_worker(self, ops, programmer, golden):
         digest = ops.read_golden(programmer, golden)
@@ -217,14 +214,15 @@ class SpiPanel(ttk.Frame):
         if not os.path.isfile(golden) and not self.var_sim.get():
             messagebox.showerror("Erreur", f"Golden absent : {golden}")
             return
-        self.log_write(f"\n--- Vérif puce vs golden ({self._programmer()}) ---")
-        self._start(self._verify_chip_worker, self._ops(), self._programmer(), golden)
+        self._start(f"Vérification puce vs golden ({self._programmer()})",
+                    self._verify_chip_worker, self._ops(), self._programmer(), golden)
 
     def _verify_chip_worker(self, ops, programmer, golden):
         same = ops.verify_chip(programmer, golden)
         if same is None:
             self._ui_queue.put(("done", "Simulation : vérif non effectuée."))
         elif same:
+            self._ui_queue.put(("log", ("ok", "Puce IDENTIQUE au golden.")))
             self._ui_queue.put(("done", "Puce IDENTIQUE au golden ✔"))
         else:
             self._ui_queue.put(("error", "La puce DIFFÈRE du golden (voir journal)."))
@@ -243,14 +241,15 @@ class SpiPanel(ttk.Frame):
                     f"le golden.\n\nUne sauvegarde de la puce est faite avant.\n\n"
                     "Continuer ?"):
                 return
-        self.log_write(f"\n--- Flash unité ({programmer}) ---")
-        self._start(self._flash_unit_worker, self._ops(), programmer, golden)
+        self._start(f"Flash de l'unité ({programmer})",
+                    self._flash_unit_worker, self._ops(), programmer, golden)
 
     def _flash_unit_worker(self, ops, programmer, golden):
         backup = ops.flash_unit(programmer, golden)
         if backup is None:
             self._ui_queue.put(("done", "Simulation : flash non effectué."))
         else:
+            self._ui_queue.put(("log", ("ok", f"Sauvegarde pré-flash : {backup}")))
             self._ui_queue.put(("done", "Flash réussi et vérifié.\nSauvegarde "
                                         f"pré-flash : {backup}"))
 
@@ -260,8 +259,8 @@ class SpiPanel(ttk.Frame):
                 "Confirmation", "Écrire les 4 variables d'env U-Boot (mtd1) via "
                 "fw_setenv ?"):
             return
-        self.log_write("\n--- Application des 4 vars d'env ---")
-        self._start(self._env_apply_worker, self._ops())
+        self._start("Application des 4 vars d'env U-Boot",
+                    self._env_apply_worker, self._ops())
 
     def _env_apply_worker(self, ops):
         ops.env_apply()
@@ -269,8 +268,8 @@ class SpiPanel(ttk.Frame):
                             else "4 variables d'env appliquées (mtd1)."))
 
     def _on_env_dump(self):
-        self.log_write("\n--- Sauvegarde de l'env (fw_printenv) ---")
-        self._start(self._env_dump_worker, self._ops())
+        self._start("Sauvegarde de l'env U-Boot (fw_printenv)",
+                    self._env_dump_worker, self._ops())
 
     def _env_dump_worker(self, ops):
         path = ops.env_dump()
