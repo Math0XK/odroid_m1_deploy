@@ -17,12 +17,9 @@ def test_spi_size_est_16_mio():
     assert sc.SPI_SIZE == 16 * 1024 * 1024
 
 
-def test_sha256_bytes_et_file_coherents(tmp_path):
+def test_sha256_bytes():
     data = b"golden-ish payload"
-    f = tmp_path / "x.bin"
-    f.write_bytes(data)
     assert sc.sha256_bytes(data) == hashlib.sha256(data).hexdigest()
-    assert sc.sha256_file(str(f)) == sc.sha256_bytes(data)
 
 
 def _valid_image():
@@ -72,11 +69,6 @@ def test_flashrom_cmd_operations():
         ["flashrom", "-p", "internal", "-w", "g.bin"]
     assert sc.flashrom_cmd("verify", "linux_mtd:dev=0", "g.bin") == \
         ["flashrom", "-p", "linux_mtd:dev=0", "-v", "g.bin"]
-
-
-def test_flashrom_cmd_avec_chip():
-    cmd = sc.flashrom_cmd("write", "ch341a_spi", "g.bin", chip="W25Q128.V")
-    assert cmd == ["flashrom", "-p", "ch341a_spi", "-c", "W25Q128.V", "-w", "g.bin"]
 
 
 def test_fw_setenv_commands_couvre_les_4_vars():

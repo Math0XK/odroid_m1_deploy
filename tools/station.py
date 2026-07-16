@@ -45,7 +45,7 @@ from clone_core import (disk_display_label, find_partclone_bundle,
                         list_block_devices)
 from clone_engine import CloneEngine, assert_not_system_disk
 from report import Reporter, console_sink
-from spi_ops import SpiOps
+from spi_ops import PROGRAMMER, SpiOps
 import check_deploy
 
 PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -380,10 +380,10 @@ def build_parser():
     s.add_argument("spi_cmd", nargs="?",
                    choices=["read", "verify", "flash", "env-apply", "env-save"],
                    help="opération SPI")
-    s.add_argument("--programmer", default="ch341a_spi",
-                   help="programmer flashrom (défaut ch341a_spi : pince CH341A, "
-                        "carte hors tension). Sans pince : flasher au prompt "
-                        "U-Boot (sf write, cf. runbook §5)")
+    s.add_argument("--programmer", default=PROGRAMMER,
+                   help=f"programmer flashrom (défaut {PROGRAMMER} : pince "
+                        "CH341A, carte hors tension). Sans pince : flasher au "
+                        "prompt U-Boot (sf write, cf. runbook §5)")
     s.add_argument("--file", metavar="FICHIER", default=DEFAULT_GOLDEN,
                    help=f"image SPI 16 MiO (défaut : {DEFAULT_GOLDEN})")
     s.add_argument("--sim", action="store_true",

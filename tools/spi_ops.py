@@ -27,12 +27,10 @@ import time
 
 import spi_core as sc
 
-# Programmer proposé (unique) : libellé lisible -> chaîne passée à flashrom `-p`.
-# Uniquement la pince CH341A ; le flash/lecture on-device (« à chaud ») a été
-# retiré (impossible de façon fiable sur cette carte, voir le runbook).
-PROGRAMMERS = {
-    "Pince CH341A (carte hors tension)": "ch341a_spi",
-}
+# Programmer flashrom unique : la pince CH341A (carte hors tension). Le
+# flash/lecture on-device (« à chaud ») a été retiré — impossible de façon
+# fiable sur cette carte, voir le runbook.
+PROGRAMMER = "ch341a_spi"
 
 
 def sha_sidecar(golden):

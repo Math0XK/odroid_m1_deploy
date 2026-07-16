@@ -21,10 +21,9 @@ API côté moteur (clone_engine, spi_ops…) :
     r.progress(42.0, "Copie… 42 %")  # relaie vers l'interface (barre)
 
 Côté interface, `sink(level, text)` reçoit chaque ligne avec son niveau parmi
-`LEVELS`. `text` peut être multi-ligne : c'est au sink de l'indenter.
+step / info / ok / warn / error / detail / cmd. `text` peut être multi-ligne :
+c'est au sink de l'indenter.
 """
-
-LEVELS = ("step", "info", "ok", "warn", "error", "detail", "cmd")
 
 
 class Reporter:
@@ -34,7 +33,7 @@ class Reporter:
 
     def __init__(self, sink, progress=None):
         self._sink = sink
-        self._progress = progress if progress is not None else (lambda p, t: None)
+        self._progress = progress if progress is not None else (lambda _pct, _text: None)
         self.total_steps = 0
         self.step_no = 0
         self.warnings = []
@@ -149,12 +148,4 @@ def console_sink(color=None):
             enc = getattr(sys.stdout, "encoding", None) or "utf-8"
             print(out.encode(enc, "replace").decode(enc), flush=True)
 
-    return sink
-
-
-def plain_sink(write):
-    """Adapte un callback texte pur `write(str)` (tests, compat) en sink."""
-    def sink(level, text):
-        prefix = _PREFIX.get(level, "  ")
-        write(f"{prefix}{text}")
     return sink

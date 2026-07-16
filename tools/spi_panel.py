@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from report import Reporter
-from spi_ops import PROGRAMMERS, SpiOps
+from spi_ops import PROGRAMMER, SpiOps
 from ui_widgets import LogView, StatusBanner, hint, section
 
 
@@ -189,18 +189,14 @@ class SpiPanel(ttk.Frame):
         return SpiOps(reporter, golden_dir=self._golden_dir,
                       sim=self.var_sim.get())
 
-    def _programmer(self):
-        # Programmer unique (pince CH341A) : plus de sélecteur.
-        return next(iter(PROGRAMMERS.values()))
-
     # ---------- Golden : lecture / vérif ----------
     def _on_read_master(self):
         golden = self.golden_entry.get().strip()
         if not golden:
             messagebox.showerror("Erreur", "Renseigne le chemin du golden.")
             return
-        self._start(f"Lecture de la puce ({self._programmer()})",
-                    self._read_master_worker, self._ops(), self._programmer(), golden)
+        self._start(f"Lecture de la puce ({PROGRAMMER})",
+                    self._read_master_worker, self._ops(), PROGRAMMER, golden)
 
     def _read_master_worker(self, ops, programmer, golden):
         digest = ops.read_golden(programmer, golden)
@@ -214,8 +210,8 @@ class SpiPanel(ttk.Frame):
         if not os.path.isfile(golden) and not self.var_sim.get():
             messagebox.showerror("Erreur", f"Golden absent : {golden}")
             return
-        self._start(f"Vérification puce vs golden ({self._programmer()})",
-                    self._verify_chip_worker, self._ops(), self._programmer(), golden)
+        self._start(f"Vérification puce vs golden ({PROGRAMMER})",
+                    self._verify_chip_worker, self._ops(), PROGRAMMER, golden)
 
     def _verify_chip_worker(self, ops, programmer, golden):
         same = ops.verify_chip(programmer, golden)
@@ -229,7 +225,7 @@ class SpiPanel(ttk.Frame):
 
     # ---------- Flash d'une unité ----------
     def _on_flash_unit(self):
-        programmer = self._programmer()
+        programmer = PROGRAMMER
         golden = self.golden_entry.get().strip()
         if not self.var_sim.get():
             if not os.path.isfile(golden):

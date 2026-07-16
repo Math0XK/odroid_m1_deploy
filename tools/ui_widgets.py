@@ -95,14 +95,9 @@ def section(parent, title):
     return frame
 
 
-def hint(parent, text, **grid_or_pack):
+def hint(parent, text):
     """Ligne d'aide grisée sous un contrôle (texte court, wrap large)."""
     lbl = ttk.Label(parent, text=text, foreground="#666", wraplength=900,
                     justify="left")
-    if grid_or_pack.get("grid"):
-        opts = dict(grid_or_pack)
-        opts.pop("grid")
-        lbl.grid(**opts)
-    else:
-        lbl.pack(anchor="w", padx=8, pady=(2, 6))
+    lbl.pack(anchor="w", padx=8, pady=(2, 6))
     return lbl

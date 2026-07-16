@@ -200,26 +200,14 @@ def bootloader_gap_present(sector64_bytes):
 #   <prefixe><N>-<label>.pc            image partclone de la partition N
 #   <prefixe>-first1M.bin              (optionnel) 1er Mio brut (table + gap)
 # Restaurable sur un disque vierge : cf. CloneEngine.restore_bundle.
-PARTCLONE_MAGIC = b"partclone-image"
-
-
-def is_partclone_image(path):
-    """Vrai si `path` commence par le magic partclone (`partclone-image`)."""
-    try:
-        with open(path, "rb") as f:
-            return f.read(len(PARTCLONE_MAGIC)) == PARTCLONE_MAGIC
-    except OSError:
-        return False
-
-
 def find_partclone_bundle(dirpath):
     """Détecte une sauvegarde bundle partclone dans le répertoire `dirpath`.
 
     Retourne un dict {'sfdisk': chemin, 'first1m': chemin|None,
     'parts': [(num, chemin_pc), ...] trié par numéro de partition}, ou None si
     le répertoire ne contient pas au moins une table `.sfdisk` et une image
-    `.pc` nommée `…<N>-….pc`. Ne lit aucun contenu (validation du magic à part) :
-    testable sans matériel.
+    `.pc` nommée `…<N>-….pc`. Ne lit aucun contenu (`partclone.restore`
+    validera les images lui-même) : testable sans matériel.
     """
     if not dirpath or not os.path.isdir(dirpath):
         return None

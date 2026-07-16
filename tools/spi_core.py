@@ -63,15 +63,6 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def sha256_file(path, chunk=1 << 20):
-    """SHA-256 hex d'un fichier, lu par blocs (le golden fait 16 MiO)."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(chunk), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def looks_like_bootloader(data):
     """Garde-fou anti-brique AVANT tout flash : `data` ressemble-t-il à une image
     SPI bootloader Odroid-M1 valide ? Retourne (ok: bool, raison: str).
@@ -100,20 +91,15 @@ def looks_like_bootloader(data):
 # --------------------------------------------------------------------------
 # Construction de commandes (testable sans exécuter flashrom / fw_setenv)
 # --------------------------------------------------------------------------
-def flashrom_cmd(op, programmer, path, chip=None):
+def flashrom_cmd(op, programmer, path):
     """argv flashrom pour une opération, sans l'exécuter.
 
     op ∈ {"read","write","verify"} ; `programmer` est passé tel quel à `-p`
     (`ch341a_spi` à la pince CH341A, carte hors tension). Sans pince, le flash
     se fait au prompt U-Boot (`sf write`), hors de cet outil.
-    `chip` (option `-c`) n'est utile que si l'auto-détection échoue.
     """
     flag = {"read": "-r", "write": "-w", "verify": "-v"}[op]
-    cmd = ["flashrom", "-p", programmer]
-    if chip:
-        cmd += ["-c", chip]
-    cmd += [flag, path]
-    return cmd
+    return ["flashrom", "-p", programmer, flag, path]
 
 
 def fw_setenv_commands(env=None):

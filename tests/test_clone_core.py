@@ -148,16 +148,6 @@ def test_dos_partuuid():
     assert cc.dos_partuuid("9D6CD9BD", 2) == "9d6cd9bd-02"
 
 
-def test_is_partclone_image(tmp_path):
-    good = tmp_path / "p1.pc"
-    good.write_bytes(b"partclone-image\x00" + b"0.3.17")
-    bad = tmp_path / "p2.pc"
-    bad.write_bytes(b"not a partclone file")
-    assert cc.is_partclone_image(str(good))
-    assert not cc.is_partclone_image(str(bad))
-    assert not cc.is_partclone_image(str(tmp_path / "absent.pc"))
-
-
 def test_find_partclone_bundle(tmp_path):
     (tmp_path / "sda-partition-table.sfdisk").write_text(SFDISK_DUMP)
     (tmp_path / "sda1-BOOT.pc").write_bytes(b"partclone-image")

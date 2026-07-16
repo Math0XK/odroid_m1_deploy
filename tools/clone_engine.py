@@ -944,7 +944,7 @@ class CloneEngine:
             self._force_unmount(part)
 
         sfdisk_out = run(["sfdisk", "-d", src_disk])
-        p1_start, p1_size = parse_start_size(sfdisk_out, src_p1)
+        p1_start, _ = parse_start_size(sfdisk_out, src_p1)
         p2_start, _ = parse_start_size(sfdisk_out, src_p2)
         r.info(f"Source {src_disk} : BOOT ({src_p1}) + racine ({src_p2}).")
 
