@@ -40,9 +40,10 @@ Power on
 
 ## 2. Le poste de déploiement (installation, une seule fois)
 
-Le paquet est conçu pour un **poste dédié** : image Ubuntu/Armbian fraîche et
-**minimale** (sans bureau graphique — comme l'image ODROID-M1 vendor), sur laquelle
-il installe tout et se lance automatiquement au boot.
+Le paquet est conçu pour un **poste dédié** : image Ubuntu/Armbian fraîche, **minimale**
+(comme l'image ODROID-M1 vendor) ou **desktop** (GNOME/GDM — `install.sh` masque
+alors le gestionnaire de bureau pour libérer l'écran au profit du kiosque), sur
+laquelle il installe tout et se lance automatiquement au boot.
 
 ```bash
 git clone <url-du-repo>          # une fois le repo séparé créé
@@ -62,6 +63,39 @@ démarrage suivant — aucun geste manuel après le premier boot. Idempotent
 journalctl -u odroid-station -f      # déboguer le service
 sudo systemctl disable odroid-station  # désactiver le boot kiosque si besoin
 ```
+
+**Écran qui reste noir / affiche « no support » (identifié 07/2026).** Trois causes
+possibles, dans l'ordre de diagnostic :
+- **Gestionnaire de bureau déjà présent** (image desktop) : `install.sh` masque
+  désormais GDM/LightDM/SDDM automatiquement. Pour revenir en arrière :
+  `sudo systemctl unmask gdm gdm3 lightdm sddm display-manager` puis
+  `sudo systemctl disable --now odroid-station`.
+- **Xorg segfault en boucle** (`journalctl -u odroid-station` montre
+  `auto-restart`/`status=1`) : bug confirmé (backtrace `coredumpctl`/`gdb`) du
+  driver `modesetting` de Xorg face au KMS vendor Rockchip du RK3568 — il
+  segfault dans `RRChangeOutputProperty` en miroitant une propriété de
+  connecteur DRM vers RandR, **indépendamment du mode d'affichage choisi**.
+  `install.sh` installe désormais `xserver-xorg-video-fbdev` et bascule Xorg
+  dessus (`/etc/X11/xorg.conf.d/20-odroid-fbdev.conf`) — ce driver ne touche
+  jamais ces propriétés et contourne le bug.
+- **Écran qui plafonne sous la résolution EDID « préférée »** (ex. moniteur
+  720p max alors que le connecteur annonce 1600x900 en préféré) : le noyau
+  démarre dans ce mode par défaut → hors plage → « no support ». Diagnostic :
+  ```bash
+  modetest -c | grep -A3 HDMI          # repérer l'ID du connecteur HDMI
+  sudo modetest -s <ID>:<mode>          # mire affichée = mode valide (Entrée pour quitter)
+  ```
+  Une fois un mode valide trouvé, le forcer au boot — via `flash-kernel`
+  (survit aux mises à jour de kernel, contrairement à un patch de `boot.scr`) :
+  ```bash
+  sudo sed -i 's|^LINUX_KERNEL_CMDLINE_DEFAULTS=.*|LINUX_KERNEL_CMDLINE_DEFAULTS="video=HDMI-A-1:<mode>@60"|' \
+      /etc/default/flash-kernel
+  sudo flash-kernel
+  sudo reboot
+  cat /proc/cmdline | grep -o 'video=[^ ]*'    # vérif après reboot
+  ```
+  **Réglage par écran** — propre à chaque poste selon le moniteur branché, à
+  appliquer manuellement, ne pas figer dans `install.sh`.
 
 Détail : [`../README.md`](../README.md). Les étapes ci-dessous (3 à 8) référencent
 les **onglets** du tableau de bord (`sudo odroid-station`) ; **le même outil** en

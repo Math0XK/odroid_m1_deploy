@@ -18,9 +18,11 @@
 # crée des lanceurs dans /usr/local/bin, et installe un service systemd
 # (`odroid-station.service`) qui lance le tableau de bord unifié en mode kiosque
 # plein écran à chaque démarrage — le poste n'a besoin d'AUCUN geste manuel après
-# le premier boot. Conçu pour une image Ubuntu/Armbian minimale SANS
-# gestionnaire de bureau (comme l'image ODROID-M1 vendor) : ce script démarre X
-# lui-même, il n'installe ni GDM ni LightDM ni de window manager.
+# le premier boot. Conçu pour un poste DÉDIÉ : ce script démarre X lui-même (pas
+# de window manager) et, si un gestionnaire de bureau est déjà présent (image
+# desktop type GNOME), le désactive pour libérer l'écran au profit du kiosque —
+# marche donc aussi bien sur l'image ODROID-M1 vendor minimale que sur une image
+# desktop fraîche.
 #
 # Idempotent : peut être relancé après un `git pull` (écrase le service, ne
 # duplique rien). Relancer la ligne curl met aussi à jour un /opt existant
@@ -76,7 +78,7 @@ if command -v apt-get >/dev/null 2>&1; then
         flashrom u-boot-tools mtd-utils \
         python3 python3-tk \
         util-linux parted rsync dosfstools e2fsprogs partclone \
-        xserver-xorg xinit x11-xserver-utils
+        xserver-xorg xinit x11-xserver-utils xserver-xorg-video-fbdev
 else
     echo "⚠ apt introuvable : installe manuellement flashrom, u-boot-tools,"
     echo "  mtd-utils, python3-tk, parted, rsync, dosfstools, e2fsprogs,"
@@ -109,6 +111,34 @@ else
     echo "  (onglet SPI → « Lire la puce → golden », ou 'odroid-station spi read')"
     echo "  puis le committer."
 fi
+
+# --- Gestionnaire de bureau existant : lui libérer l'écran pour le kiosque ---
+# Sur une image desktop (GDM/GNOME déjà installés), le greeter garde le DRM
+# master du GPU : le X du kiosque ne peut pas prendre l'écran (chvt bloque ou
+# le second Xorg segfault). Masquer le DM (pas juste stop/disable) empêche
+# aussi son alias display-manager.service de le relancer au prochain boot.
+if command -v systemctl >/dev/null 2>&1; then
+    DM_LINK=/etc/systemd/system/display-manager.service
+    if [ -e "$DM_LINK" ] || [ -L "$DM_LINK" ]; then
+        echo "Gestionnaire de bureau détecté : désactivé au profit du kiosque…"
+        $SUDO systemctl stop display-manager.service 2>/dev/null || true
+        $SUDO rm -f "$DM_LINK"
+        $SUDO systemctl mask gdm gdm3 lightdm sddm display-manager 2>/dev/null || true
+    fi
+fi
+
+# --- Xorg : driver fbdev — contourne un crash connu de modesetting_drv face au
+# KMS vendor Rockchip du RK3568 (segfault dans RRChangeOutputProperty lors du
+# mirroring RandR d'une propriété de connecteur DRM, indépendant du mode choisi
+# — voir docs/DEPLOIEMENT_FLOTTE.md §2). fbdev ne touche jamais ces propriétés.
+echo "Configuration Xorg (driver fbdev)…"
+$SUDO tee /etc/X11/xorg.conf.d/20-odroid-fbdev.conf >/dev/null <<'XORGCONF'
+Section "Device"
+    Identifier "Odroid-M1 HDMI"
+    Driver     "fbdev"
+    Option     "fbdev" "/dev/fb0"
+EndSection
+XORGCONF
 
 # --- Service systemd : boot kiosque (X + tableau de bord plein écran) ---
 if command -v systemctl >/dev/null 2>&1; then

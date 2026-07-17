@@ -70,6 +70,16 @@ if [ -e "$BIN" ]; then
     echo "Lanceur supprimé : $BIN"
 fi
 
+# --- Config Xorg fbdev + gestionnaire de bureau masqué par install.sh ---
+XORGCONF=/etc/X11/xorg.conf.d/20-odroid-fbdev.conf
+if [ -e "$XORGCONF" ]; then
+    $SUDO rm -f "$XORGCONF"
+    echo "Config Xorg supprimée : $XORGCONF"
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    $SUDO systemctl unmask gdm gdm3 lightdm sddm display-manager 2>/dev/null || true
+fi
+
 # --- Paquets apt spécifiques au kiosque (optionnel) ---
 if [ "$PURGE_PACKAGES" = "1" ]; then
     if command -v apt-get >/dev/null 2>&1; then
