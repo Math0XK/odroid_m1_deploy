@@ -58,11 +58,28 @@ DEFAULT_GOLDEN = os.path.join(GOLDEN_DIR, "golden_spi_16MiB.bin")
 # que le CLI reste utilisable en SSH sans X11 ni python3-tk.
 # ---------------------------------------------------------------------------
 def run_gui():
+    import socket
+    import subprocess
     import tkinter as tk
     from tkinter import ttk
     from spi_panel import SpiPanel
     from clone_panel import ClonePanel
     from verify_panel import VerifyPanel
+
+    def _network_info_text():
+        """IP(s) v4 + nom mDNS (<hostname>.local, publié par avahi-daemon si
+        installé — voir install.sh) : pour qu'un technicien devant l'écran
+        sache tout de suite comment s'y connecter en SSH, sans chercher l'IP
+        DHCP sur un routeur."""
+        ips = []
+        try:
+            out = subprocess.run(["hostname", "-I"], capture_output=True,
+                                 text=True, timeout=2).stdout.split()
+            ips = [ip for ip in out if "." in ip and not ip.startswith("127.")]
+        except Exception:
+            pass
+        ip_part = " / ".join(ips) if ips else "pas de réseau"
+        return f"{ip_part}   ·   {socket.gethostname()}.local"
 
     class StationGUI(tk.Tk):
         def __init__(self):
@@ -85,9 +102,16 @@ def run_gui():
             self.bind("<Escape>", self._toggle_fullscreen)
             self.bind("<F11>", self._toggle_fullscreen)
 
-            header = ttk.Label(self, text="Station de déploiement Odroid-M1",
+            header_row = ttk.Frame(self)
+            header_row.pack(fill="x", padx=10, pady=(8, 0))
+            header = ttk.Label(header_row, text="Station de déploiement Odroid-M1",
                                font=("TkDefaultFont", 16, "bold"), anchor="w")
-            header.pack(fill="x", padx=10, pady=(8, 0))
+            header.pack(side="left")
+            self.net_label = ttk.Label(header_row, text="", anchor="e",
+                                       font=("TkDefaultFont", 11),
+                                       foreground="#555555")
+            self.net_label.pack(side="right")
+            self._refresh_network_info()
 
             notebook = ttk.Notebook(self)
             notebook.pack(fill="both", expand=True, padx=8, pady=8)
@@ -98,6 +122,12 @@ def run_gui():
         def _toggle_fullscreen(self, _event=None):
             self._fullscreen = not self._fullscreen
             self.attributes("-fullscreen", self._fullscreen)
+
+        def _refresh_network_info(self):
+            # Rafraîchi (pas figé au lancement) : le DHCP peut ne pas avoir
+            # encore attribué d'IP au moment où le GUI démarre au boot.
+            self.net_label.config(text=_network_info_text())
+            self.after(5000, self._refresh_network_info)
 
     if os.geteuid() != 0:
         print("⚠ Pas lancé en root : flash SPI, clonage et fw_setenv échoueront. "

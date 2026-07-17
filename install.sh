@@ -78,7 +78,8 @@ if command -v apt-get >/dev/null 2>&1; then
         flashrom u-boot-tools mtd-utils \
         python3 python3-tk \
         util-linux parted rsync dosfstools e2fsprogs partclone \
-        xserver-xorg xinit x11-xserver-utils xserver-xorg-video-fbdev
+        xserver-xorg xinit x11-xserver-utils xserver-xorg-video-fbdev \
+        avahi-daemon
 else
     echo "⚠ apt introuvable : installe manuellement flashrom, u-boot-tools,"
     echo "  mtd-utils, python3-tk, parted, rsync, dosfstools, e2fsprogs,"
