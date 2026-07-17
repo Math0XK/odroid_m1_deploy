@@ -36,7 +36,7 @@ from clone_core import (disk_display_label, find_partclone_bundle,
                         list_block_devices)
 from clone_engine import CloneEngine, assert_not_system_disk
 from report import Reporter
-from ui_widgets import LogView, StatusBanner, hint, section
+from ui_widgets import LogView, ScrollableFrame, StatusBanner, hint, scroll_height, section
 
 
 class ClonePanel(ttk.Frame):
@@ -59,8 +59,16 @@ class ClonePanel(ttk.Frame):
 
     # ---------- UI ----------
     def _build_ui(self):
+        # Contrôles de config (1/2/3) : zone défilante de hauteur fixe, pour que
+        # le bandeau/la progression/le journal packés après restent TOUJOURS
+        # visibles, même sur un écran bas (le nombre de contrôles ici dépasse
+        # facilement 720p à lui seul).
+        scroll = ScrollableFrame(self, height=scroll_height(self))
+        scroll.pack(side="top", fill="x")
+        body = scroll.body
+
         # --- 1 · Source ---
-        src_frame = section(self, "1 · Source (lue seulement, jamais modifiée)")
+        src_frame = section(body, "1 · Source (lue seulement, jamais modifiée)")
         self.src_mode = tk.StringVar(value="disk")
         radios = ttk.Frame(src_frame)
         radios.pack(fill="x", padx=4)
@@ -82,7 +90,7 @@ class ClonePanel(ttk.Frame):
                         "système de CE poste est refusé automatiquement.")
 
         # --- 2 · Destination ---
-        dst_frame = section(self, "2 · Destination")
+        dst_frame = section(body, "2 · Destination")
         self.dst_mode = tk.StringVar(value="disk")
         dradios = ttk.Frame(dst_frame)
         dradios.pack(fill="x", padx=4)
@@ -126,7 +134,7 @@ class ClonePanel(ttk.Frame):
         self.bootmedium_combo.pack(fill="x", padx=4, pady=(2, 6))
 
         # --- 3 · Lancement ---
-        act = section(self, "3 · Lancer")
+        act = section(body, "3 · Lancer")
         arow = ttk.Frame(act)
         arow.pack(fill="x", padx=4, pady=4)
         ttk.Button(arow, text="↻  Rafraîchir les disques",

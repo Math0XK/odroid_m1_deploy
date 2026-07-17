@@ -87,6 +87,49 @@ class LogView(ttk.Frame):
         self.text.configure(state="disabled")
 
 
+class ScrollableFrame(ttk.Frame):
+    """Zone défilante verticale, hauteur FIXE : les contrôles de config d'un
+    onglet peuvent dépasser la hauteur d'écran (variable selon le poste, cf.
+    docs/DEPLOIEMENT_FLOTTE.md §2) sans jamais pousser le bandeau d'état ou le
+    journal hors champ. Monter les widgets du panel dans `.body`, PAS `self`."""
+
+    def __init__(self, master, height):
+        super().__init__(master)
+        canvas = tk.Canvas(self, highlightthickness=0, height=height)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.body = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind(
+            "<Configure>",
+            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfig(window_id, width=e.width))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        # Molette (utile en dev/SSH+X ; le poste kiosque est tactile, la
+        # scrollbar visible reste l'affordance principale) — active seulement
+        # au survol pour ne pas capter le défilement d'un autre onglet.
+        def _scroll(event):
+            canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+        canvas.bind("<Enter>", lambda _e: (
+            canvas.bind_all("<Button-4>", _scroll),
+            canvas.bind_all("<Button-5>", _scroll)))
+        canvas.bind("<Leave>", lambda _e: (
+            canvas.unbind_all("<Button-4>"),
+            canvas.unbind_all("<Button-5>")))
+
+
+def scroll_height(widget):
+    """Hauteur (px) allouée à la zone de config défilante d'un panel : une
+    fraction de l'écran RÉEL (pas une constante — les écrans varient selon le
+    poste), qui laisse toujours une part généreuse à la barre d'état/le
+    journal, packés après (voir chaque panel `_build_ui`)."""
+    return max(140, int(widget.winfo_screenheight() * 0.36))
+
+
 def section(parent, title):
     """LabelFrame de section numérotée, style commun aux onglets
     (« 1 · Source », « 2 · Destination »…)."""

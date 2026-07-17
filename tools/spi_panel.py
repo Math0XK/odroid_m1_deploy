@@ -35,7 +35,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from report import Reporter
 from spi_ops import PROGRAMMER, SpiOps
-from ui_widgets import LogView, StatusBanner, hint, section
+from ui_widgets import LogView, ScrollableFrame, StatusBanner, hint, scroll_height, section
 
 
 class SpiPanel(ttk.Frame):
@@ -60,8 +60,15 @@ class SpiPanel(ttk.Frame):
     def _build_ui(self, default_golden):
         btn = {"padx": 6, "pady": 4}
 
+        # Contrôles de config (1/2/3) : zone défilante de hauteur fixe, pour que
+        # le bandeau/la progression/le journal packés après restent TOUJOURS
+        # visibles, même sur un écran bas.
+        scroll = ScrollableFrame(self, height=scroll_height(self))
+        scroll.pack(side="top", fill="x")
+        body = scroll.body
+
         # --- 1 · Golden ---
-        g_frame = section(self, "1 · Golden — lire / vérifier la puce (16 MiO, pince CH341A)")
+        g_frame = section(body, "1 · Golden — lire / vérifier la puce (16 MiO, pince CH341A)")
         row = ttk.Frame(g_frame); row.pack(fill="x", padx=4)
         ttk.Label(row, text="Fichier :").pack(side="left", padx=4)
         self.golden_entry = ttk.Entry(row)
@@ -79,7 +86,7 @@ class SpiPanel(ttk.Frame):
                       "Linux n'est pas possible sur cette carte.")
 
         # --- 2 · Flash unité ---
-        f_frame = section(self, "2 · Flasher une unité (EFFACE sa puce SPI)")
+        f_frame = section(body, "2 · Flasher une unité (EFFACE sa puce SPI)")
         ttk.Button(f_frame, text="Flasher cette unité avec le golden",
                    command=self._on_flash_unit).pack(side="left", **btn)
         hint(f_frame, "Sauvegarde la puce cible AVANT le flash "
@@ -87,7 +94,7 @@ class SpiPanel(ttk.Frame):
                       "signature + SHA256), écrit puis vérifie.")
 
         # --- 3 · Env U-Boot ---
-        e_frame = section(self, "3 · Variables d'env U-Boot (sur l'unité, root)")
+        e_frame = section(body, "3 · Variables d'env U-Boot (sur l'unité, root)")
         erow = ttk.Frame(e_frame); erow.pack(fill="x")
         ttk.Button(erow, text="Appliquer les 4 vars d'env",
                    command=self._on_env_apply).pack(side="left", **btn)

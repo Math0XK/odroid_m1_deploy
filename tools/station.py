@@ -72,6 +72,16 @@ def run_gui():
 
             self._fullscreen = True
             self.attributes("-fullscreen", True)
+            # Poste kiosque = X SANS gestionnaire de fenêtres (voir station/xinitrc) :
+            # rien d'autre ne contraint la taille de la fenêtre. Si le contenu total
+            # dépasse l'écran, Tk agrandit la fenêtre au-delà au lieu de le faire
+            # tenir dedans (pack_propagate) — le bas de l'interface part hors champ,
+            # invisible. On fige la géométrie sur l'écran réel et on coupe la
+            # propagation : le contenu doit tenir DANS l'écran (ou défiler, cf. les
+            # panels qui enveloppent leurs contrôles dans un ScrollableFrame).
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            self.geometry(f"{sw}x{sh}+0+0")
+            self.pack_propagate(False)
             self.bind("<Escape>", self._toggle_fullscreen)
             self.bind("<F11>", self._toggle_fullscreen)
 

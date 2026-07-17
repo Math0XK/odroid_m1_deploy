@@ -16,7 +16,7 @@ import threading
 from tkinter import ttk
 
 import check_deploy
-from ui_widgets import LogView, StatusBanner, hint, section
+from ui_widgets import LogView, ScrollableFrame, StatusBanner, hint, scroll_height, section
 
 
 class VerifyPanel(ttk.Frame):
@@ -31,7 +31,15 @@ class VerifyPanel(ttk.Frame):
         self.after(100, self._pump_ui_queue)
 
     def _build_ui(self):
-        v_frame = section(self, "Vérification post-déploiement — À LANCER SUR L'UNITÉ")
+        # Contrôles de config : zone défilante de hauteur fixe, pour que le
+        # bandeau/la progression/le journal packés après restent TOUJOURS
+        # visibles, même sur un écran bas — cohérent avec les autres onglets
+        # même si ce panel est léger (robustesse sur un écran encore plus petit).
+        scroll = ScrollableFrame(self, height=scroll_height(self))
+        scroll.pack(side="top", fill="x")
+        body = scroll.body
+
+        v_frame = section(body, "Vérification post-déploiement — À LANCER SUR L'UNITÉ")
         hint(v_frame, "Contrôle GO/NO-GO : kernel vendor attendu, racine sur "
                       "NVMe, dmesg sans erreur NPU connue, nœuds DRI présents, "
                       "et — en option — un smoke test d'inférence NPU.")
